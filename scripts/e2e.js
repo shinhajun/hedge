@@ -27,10 +27,14 @@ const { positionals, values: opt } = parseArgs({
     auto: { type: 'boolean' }, // start the way the toolbar click does (the hand-off to the panel), not with Listen
     paper: { type: 'boolean' }, // turn paper trading on
     'expect-trade': { type: 'boolean' }, // fail unless at least one paper trade opens
+    'block-binance': { type: 'boolean' }, // answer like Binance does for US addresses (451), to exercise the Coinbase path
+    'block-binance-stream': { type: 'boolean' }, // Binance's REST answers but its trade stream can't connect
+    thresholds: { type: 'string' }, // paper trade thresholds "enter,exit", as set in Settings
+    ext: { type: 'string' }, // another copy of the extension (e.g. an older version) instead of extension/
   },
 });
 const mode = positionals[0] || 'tab';
-const extDir = path.join(root, 'extension');
+const extDir = opt.ext ? path.resolve(opt.ext) : path.join(root, 'extension');
 const outDir = path.join(root, '.e2e');
 const extId = [...crypto.createHash('sha256').update(extDir).digest('hex').slice(0, 32)].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
 const clip = CLIPS.find((c) => c.id === (opt.clip || (mode === 'mic' ? 'K4ciiDyUvUo' : 'duUBLlLBcdg')));
@@ -60,7 +64,8 @@ await new Promise((r) => server.listen(0, r));
 const port = server.address().port;
 
 // YouTube stops headless playback after ~45 s ("Something went wrong") unless the browser looks ordinary.
-const args = [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, `--allowlisted-extension-id=${extId}`, '--autoplay-policy=no-user-gesture-required', '--disable-blink-features=AutomationControlled'];
+const blockBinance = opt['block-binance'] || opt['block-binance-stream'] ? ['--host-resolver-rules=MAP stream.binance.com ~NOTFOUND'] : [];
+const args = [...blockBinance, `--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, `--allowlisted-extension-id=${extId}`, '--autoplay-policy=no-user-gesture-required', '--disable-blink-features=AutomationControlled'];
 let fakeWav;
 if (mode === 'mic') {
   // Chromium's fake microphone plays a WAV file on a loop.
@@ -81,13 +86,26 @@ const context0 = await chromium.launchPersistentContext(userDataDir, {
 });
 const errors = [];
 context0.on('weberror', (e) => /chrome-extension:/.test(e.error().stack || '') && errors.push(e.error().message));
-context0.on('console', (m) => m.type() === 'error' && /chrome-extension:/.test(m.location()?.url || '') && errors.push(m.text()));
+// Chrome logs failed connections itself; with Binance blocked on purpose those are expected.
+const expected = (text) => (opt['block-binance'] || opt['block-binance-stream']) && /binance\.com.*net::ERR_/.test(text);
+context0.on('console', (m) => m.type() === 'error' && /chrome-extension:/.test(m.location()?.url || '') && !expected(m.text()) && errors.push(m.text()));
 
 const sw = context0.serviceWorkers()[0] || (await context0.waitForEvent('serviceworker'));
 if (new URL(sw.url()).host !== extId) throw new Error('unexpected extension id');
 await sleep(1000); // the settings tab opens on install, sometimes in the first blank tab
 for (const p of context0.pages()) if (p.url().includes(extId)) await p.close();
 await sw.evaluate(async (keys) => chrome.storage.local.set(keys), { apiKey: envKey('TYPESAFE_API_KEY'), deepgramKey: envKey('DEEPGRAM_API_KEY'), asset, context });
+if (opt.thresholds) {
+  const [enter, exit] = opt.thresholds.split(',').map(Number);
+  await sw.evaluate((t) => chrome.storage.local.set({ paperThresholds: t }), { enter, exit });
+}
+let binanceHits = 0;
+if (opt['block-binance']) {
+  await context0.route('https://api.binance.com/**', (route) => {
+    binanceHits++;
+    route.fulfill({ status: 451, contentType: 'application/json', body: '{"code":0,"msg":"Service unavailable from a restricted location."}' });
+  });
+}
 
 // The page's main video, which may sit in an iframe (embedded players).
 async function videoFrame() {
@@ -258,6 +276,18 @@ if (mode === 'tab') {
   }
   await options.close();
 }
+// Blocked Binance: listening again must not ask Binance a second time (the failure is remembered).
+let venueMemory = null;
+if (opt['block-binance']) {
+  const before = binanceHits;
+  await panel.click('#go'); // stop
+  await sleep(1000);
+  await panel.click('#go'); // listen again
+  await panel.waitForFunction(() => globalThis.panel.session()?.feed, null, { timeout: 15000 }).catch(() => {});
+  await sleep(4000);
+  venueMemory = { binanceRequestsFirst: before, binanceRequestsAgain: binanceHits - before, venueAgain: await panel.evaluate(() => globalThis.panel.session()?.feed?.venue), remembered: await panel.evaluate(() => chrome.storage.local.get('badVenues').then((x) => x.badVenues)) };
+  log(`listening again: ${JSON.stringify(venueMemory)}`);
+}
 await panel.click('#go'); // stop
 await sleep(800);
 const lamp = await panel.$eval('#lamp', (el) => el.dataset.state);
@@ -281,13 +311,19 @@ const checks = {
   words: timeline.words.length > 0,
   extensionErrors: errors.length === 0,
   price: ticks.length >= (timeline.price?.kind === 'crypto' ? 20 : 1),
+  ...(opt['block-binance-stream'] ? { coinbase: timeline.price?.venue === 'Coinbase' } : {}),
+  ...(opt['block-binance'] ? {
+    coinbase: timeline.price?.venue === 'Coinbase' && (await panel.$eval('#priceLabel', (el) => el.textContent)).includes('Coinbase'),
+    rememberedVenue: venueMemory?.binanceRequestsAgain === 0 && venueMemory?.venueAgain === 'Coinbase',
+  } : {}),
   ...(opt['expect-trade'] ? { paperTrade: paperEvents.some((e) => e.type === 'open') } : {}),
 };
 const report = {
   mode,
   checks,
   matrix,
-  price: timeline.price && { venue: timeline.price.venue, symbol: timeline.price.symbol, kind: timeline.price.kind, ticks: ticks.length, first: ticks[0]?.price, last: ticks.at(-1)?.price },
+  price: timeline.price && { venue: timeline.price.venue, symbol: timeline.price.symbol, kind: timeline.price.kind, ticks: ticks.length, first: ticks[0]?.price, last: ticks.at(-1)?.price, firstTickAt: ticks[0]?.t, label: await panel.$eval('#priceLabel', (el) => el.textContent) },
+  venueMemory,
   paper: timeline.paper && { events: paperEvents, pnl: timeline.paper.pnl },
   source: web ? opt.url : clip.id,
   asset,

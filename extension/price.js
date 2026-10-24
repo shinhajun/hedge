@@ -19,34 +19,44 @@ async function getJson(url, ms = 6000) {
   return res.json();
 }
 
+const PROBE_MS = 2500; // a blocked venue (Binance from the US answers 451) must not hold up the fallback
+
 // Finds a source for the asset: { kind: 'crypto' | 'stock', venue, symbol, open(onTick) → close }.
-export async function findSource(asset) {
+// `skip`: venues known not to work here. Returns { source, failed } (failed: venues that didn't answer).
+export async function findSource(asset, { skip = [] } = {}) {
   const sym = baseSymbol(asset);
   const tries = [
-    async () => {
-      await getJson(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`);
+    ['Binance', async () => {
+      await getJson(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}USDT`, PROBE_MS);
       return { kind: 'crypto', venue: 'Binance', symbol: `${sym}USDT`, open: (cb) => binance(`${sym}USDT`, cb) };
-    },
-    async () => {
-      await getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/ticker`);
+    }],
+    ['Coinbase', async () => {
+      await getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/ticker`, PROBE_MS);
       return { kind: 'crypto', venue: 'Coinbase', symbol: `${sym}-USD`, open: (cb) => coinbase(`${sym}-USD`, cb) };
-    },
-    async () => {
+    }],
+    ['Yahoo', async () => {
       const ticker = sym.replace('.', '-');
       const quote = await yahoo(ticker);
       return { kind: 'stock', venue: 'Yahoo', symbol: ticker, first: quote, open: (cb) => poll(() => yahoo(ticker), cb) };
-    },
-    async () => {
+    }],
+    ['Nasdaq', async () => {
       const quote = await nasdaq(sym);
       return { kind: 'stock', venue: 'Nasdaq', symbol: sym, first: quote, open: (cb) => poll(() => nasdaq(sym), cb) };
-    },
+    }],
   ];
-  for (const t of tries) {
+  const failed = [];
+  for (const [venue, t] of tries) {
+    if (skip.includes(venue)) continue;
     try {
-      return await t();
-    } catch {}
+      return { source: await t(), failed };
+    } catch (err) {
+      // An unreachable crypto venue is remembered (Binance refuses US addresses with 451). A 400/404 only
+      // means the symbol isn't listed there, and stock sources are just asked again next time.
+      const refused = !/^4\d\d$/.test(err.message) || err.message === '451' || err.message === '403';
+      if (refused && (venue === 'Binance' || venue === 'Coinbase')) failed.push(venue);
+    }
   }
-  return null;
+  return { source: null, failed };
 }
 
 function binance(symbol, cb) {

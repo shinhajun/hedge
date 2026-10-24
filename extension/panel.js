@@ -1,9 +1,9 @@
 // Side panel: starts and stops listening, judges every new word with Jev and draws the result.
 import { applyBrand, PRODUCT_NAME } from './brand.js';
-import { DEEPGRAM_USD_PER_MIN } from './deepgram.js';
+import { DEEPGRAM_USD_PER_MIN, keytermsFor } from './deepgram.js';
 import { callJev, costOf, formatUsd } from './jev.js';
 import { ACTIVE_AT, Judge } from './judge.js';
-import { PaperBook } from './paper.js';
+import { ENTER, EXIT, PaperBook } from './paper.js';
 import { findSource } from './price.js';
 import { buildState, DRIVERS, QUESTIONS, readAnswers, signalWord } from './questions.js';
 import { Transcript } from './transcript.js';
@@ -17,6 +17,8 @@ const DOM_WORDS = 700; // older words leave the page (they stay in the transcrip
 const CHART_SECONDS = 15 * 60; // the chart shows the last 15 minutes
 const SWINGS = 5;
 const FRESH_MS = { crypto: 15_000, stock: 120_000 }; // a tick older than this isn't a live price
+const BAD_VENUE_MS = 24 * 3600_000; // how long a venue that failed here is skipped
+const SILENT_FEED_MS = 6000; // a crypto stream with no trade by then is treated as blocked
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search); // tests open the panel as a tab: ?tab=<id>
@@ -30,7 +32,20 @@ let session = null;
 let usageTotal = null;
 
 // ---------- settings ----------
-const saved = await chrome.storage.local.get(['asset', 'context', 'source', 'usageTotal', 'paper']);
+const saved = await chrome.storage.local.get(['asset', 'context', 'source', 'usageTotal', 'paper', 'paperThresholds']);
+let thresholds = { enter: ENTER, exit: EXIT, ...saved.paperThresholds };
+function showThresholds() {
+  for (const el of document.querySelectorAll('.pEnter')) el.textContent = thresholds.enter;
+  for (const el of document.querySelectorAll('.pExit')) el.textContent = thresholds.exit;
+}
+showThresholds();
+// Settings can change the thresholds mid-session; the open book follows from its next decision.
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== 'local' || !ch.paperThresholds) return;
+  thresholds = { enter: ENTER, exit: EXIT, ...ch.paperThresholds.newValue };
+  if (session?.book) Object.assign(session.book, thresholds);
+  showThresholds();
+});
 $('asset').value = saved.asset || '';
 $('context').value = saved.context || '';
 setSource(saved.source || 'tab');
@@ -42,7 +57,7 @@ $('paperOn').checked = !!saved.paper;
 $('paperOn').onchange = () => {
   chrome.storage.local.set({ paper: $('paperOn').checked });
   // Turning it on starts a fresh book from now; turning it off drops it.
-  if (session?.judge) session.book = $('paperOn').checked ? new PaperBook() : null;
+  if (session?.judge) session.book = $('paperOn').checked ? new PaperBook(thresholds) : null;
   dirty();
 };
 
@@ -150,8 +165,10 @@ async function armJudge() {
       if (err.status === 401) notice('Jev rejected the TypeSafe key. <a href="options.html" target="_blank">Check it in Settings</a>.');
     },
   });
-  s.book = $('paperOn').checked ? new PaperBook() : null;
+  s.book = $('paperOn').checked ? new PaperBook(thresholds) : null;
   $('asset').readOnly = $('context').readOnly = true;
+  // The capture may have started before the asset was known: give Deepgram its names now.
+  chrome.runtime.sendMessage({ target: 'offscreen', type: 'configure', keyterms: keytermsFor(asset, s.context) }).catch(() => {});
   notice('');
   startPrice(s);
   s.judge.update(s.transcript.judgeable());
@@ -295,7 +312,14 @@ navigator.mediaDevices.addEventListener?.('devicechange', listDevices);
 async function startPrice(s) {
   $('priceLabel').textContent = s.asset;
   $('priceNote').textContent = 'Looking for a live price…';
-  const src = await findSource(s.asset);
+  // A venue that failed here (Binance refuses US addresses) is skipped for a day.
+  const { badVenues = {} } = await chrome.storage.local.get('badVenues');
+  const skip = Object.keys(badVenues).filter((v) => Date.now() - badVenues[v] < BAD_VENUE_MS);
+  const { source: src, failed } = await findSource(s.asset, { skip });
+  if (failed.length) {
+    for (const v of failed) badVenues[v] = Date.now();
+    chrome.storage.local.set({ badVenues });
+  }
   if (s !== session || !s.on) return;
   s.feed = src;
   if (!src) {
@@ -314,6 +338,16 @@ async function startPrice(s) {
   };
   if (src.first) onTick(src.first);
   s.closeFeed = src.open(onTick);
+  // A stream that opens but never ticks (Binance's WebSocket from the US) counts as blocked too.
+  if (src.kind === 'crypto') {
+    setTimeout(async () => {
+      if (s !== session || !s.on || s.feed !== src || s.lastTick?.seenAt) return;
+      s.closeFeed();
+      const { badVenues: bad = {} } = await chrome.storage.local.get('badVenues');
+      await chrome.storage.local.set({ badVenues: { ...bad, [src.venue]: Date.now() } });
+      startPrice(s);
+    }, SILENT_FEED_MS);
+  }
 }
 
 // The live price, or null when the last tick is stale or the market is closed.

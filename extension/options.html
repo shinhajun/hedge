@@ -25,6 +25,9 @@
     .usage dt { font: 700 11px/1.2 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
     .usage dd { margin: 0; font: 800 28px/1 var(--display); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
     @media (max-width: 520px) { .usage { grid-template-columns: repeat(2, 1fr); row-gap: 16px; } .usage div:nth-child(3) { padding-left: 0; border-left: 0; } }
+    .thresholds { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+    .thresholds label { display: flex; flex-direction: column; gap: 6px; }
+    .thresholds input { width: 7em; font: 800 18px/1 var(--display); letter-spacing: 0.04em; }
     ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 15px; }
     ol li { margin-bottom: 6px; }
     ol b { color: var(--ink); font-weight: 600; }
@@ -59,6 +62,18 @@
         <div class="actions"><button class="btn" type="submit">Save and test</button><button class="btn btn-quiet" type="button" data-clear="deepgramKey">Remove</button></div>
       </form>
       <p class="result" id="dgResult" role="status"></p>
+    </section>
+
+    <section>
+      <h2>Paper trade thresholds</h2>
+      <p class="hint">Where the simulated position opens and closes. The defaults are cautious; lower them for a livelier demo. Exit has to sit closer to zero than entry.</p>
+      <form id="paperForm" class="thresholds" autocomplete="off">
+        <label><span class="label">Enter at ±</span><input class="field" id="enterAt" type="number" min="0.05" max="0.95" step="0.05" required></label>
+        <label><span class="label">Exit inside ±</span><input class="field" id="exitAt" type="number" min="0" max="0.9" step="0.05" required></label>
+        <button class="btn" type="submit">Save</button>
+        <button class="btn btn-quiet" type="button" id="paperReset">Defaults</button>
+      </form>
+      <p class="result" id="paperResult" role="status"></p>
     </section>
 
     <section>

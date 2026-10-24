@@ -3,15 +3,19 @@
 //   - how often interim results arrive
 //   - revision rate per judging policy (see extension/transcript.js)
 //   - cost per hour
-// Usage: node scripts/stt-bench.js [seconds per clip, default 120]
+// Usage: node scripts/stt-bench.js [seconds per clip, default 120] [--only <clip id>] [--keyterms]
+//   --keyterms  turn on keyterm prompting (extension/deepgram.js keytermsFor) and count the key terms heard
 // Needs DEEPGRAM_API_KEY in .env (never printed) and 16 kHz PCM clips in .e2e/audio (see scripts/audio.js).
 import fs from 'node:fs';
 import path from 'node:path';
-import { CLOSE_STREAM, DEEPGRAM_USD_PER_MIN, openDeepgram, SAMPLE_RATE } from '../extension/deepgram.js';
+import { CLOSE_STREAM, DEEPGRAM_USD_PER_MIN, keytermsFor, openDeepgram, SAMPLE_RATE } from '../extension/deepgram.js';
 import { POLICIES, Transcript } from '../extension/transcript.js';
 import { CLIPS, envKey, pcmPath, root } from './audio.js';
 
-const seconds = Number(process.argv[2] || 120);
+const args = process.argv.slice(2);
+const seconds = Number(args.find((a) => /^\d+$/.test(a)) || 120);
+const only = args.includes('--only') ? args[args.indexOf('--only') + 1] : null;
+const useKeyterms = args.includes('--keyterms');
 const apiKey = envKey('DEEPGRAM_API_KEY');
 const CHUNK_MS = 100;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -27,7 +31,7 @@ async function stream(clip) {
   const bytesPerChunk = (SAMPLE_RATE * 2 * CHUNK_MS) / 1000;
   const from = Math.floor(clip.from * SAMPLE_RATE) * 2;
   const to = Math.min(pcm.length, from + seconds * SAMPLE_RATE * 2);
-  const ws = openDeepgram(apiKey);
+  const ws = openDeepgram(apiKey, useKeyterms ? { keyterms: keytermsFor(clip.asset, clip.context) } : {});
   ws.binaryType = 'arraybuffer';
   const messages = [];
   let t0;
@@ -83,11 +87,12 @@ function analyze(messages) {
     out[policy] = { p50: pct(lat, 50), p95: pct(lat, 95), revised: wrong / truth.length, rejudgesPerMin: rejudges / (seconds / 60) };
   }
   const gaps = results.slice(1).map((m, i) => m.at - results[i].at);
-  return { words: truth.length, results: results.length, perSec: results.length / seconds, gapP50: pct(gaps, 50), policies: out };
+  const text = truth.map((w) => w.w).join(' ');
+  return { words: truth.length, results: results.length, perSec: results.length / seconds, gapP50: pct(gaps, 50), policies: out, text };
 }
 
 console.log(`Deepgram nova-3 live, ${seconds}s per clip at real-time pace, ${CHUNK_MS} ms chunks\n`);
-const clips = CLIPS.filter((c) => fs.existsSync(pcmPath(c.id)));
+const clips = CLIPS.filter((c) => fs.existsSync(pcmPath(c.id)) && (!only || c.id === only));
 const runs = await Promise.all(clips.map(async (clip) => ({ clip, ...analyze(await stream(clip)) })));
 const rows = [];
 for (const r of runs) {
@@ -98,5 +103,11 @@ for (const r of runs) {
     rows.push({ clip: r.clip.id, policy: p, ...m });
   }
 }
+// How often each key term (and a known mishearing) shows up in the final transcript.
+for (const r of runs) {
+  const terms = [...keytermsFor(r.clip.asset, r.clip.context), 'Christ'];
+  const counts = Object.fromEntries(terms.map((t) => [t, (r.text.match(new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')) || []).length]).filter(([, n]) => n));
+  console.log(`${r.clip.name} key terms heard${useKeyterms ? ' (keyterms on)' : ''}: ${JSON.stringify(counts)}`);
+}
 console.log(`\ncost: $${(DEEPGRAM_USD_PER_MIN * 60).toFixed(2)}/hour (nova-3 streaming pay-as-you-go, promo; list $0.46/hour)`);
-fs.writeFileSync(path.join(root, '.e2e', 'stt-bench.json'), JSON.stringify({ seconds, runs: runs.map(({ clip, ...r }) => ({ clip: clip.id, ...r })) }, null, 2));
+fs.writeFileSync(path.join(root, '.e2e', `stt-bench${only ? `-${only}` : ''}${useKeyterms ? '-keyterms' : ''}.json`), JSON.stringify({ seconds, runs: runs.map(({ clip, ...r }) => ({ clip: clip.id, ...r })) }, null, 2));

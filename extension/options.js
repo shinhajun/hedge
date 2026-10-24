@@ -1,6 +1,7 @@
 import { applyBrand } from './brand.js';
 import { DEEPGRAM_USD_PER_MIN, openDeepgram } from './deepgram.js';
 import { callJev, costOf, formatUsd, USD_PER_INPUT_TOKEN } from './jev.js';
+import { ENTER, EXIT } from './paper.js';
 import { QUESTIONS } from './questions.js';
 
 applyBrand();
@@ -74,6 +75,24 @@ $('dgForm').addEventListener('submit', async (e) => {
   }
 });
 
+// ---- paper trade thresholds ----
+function showThresholds({ enter = ENTER, exit = EXIT } = {}) {
+  $('enterAt').value = enter;
+  $('exitAt').value = exit;
+}
+$('paperForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const enter = Number($('enterAt').value), exit = Number($('exitAt').value);
+  if (!(enter > 0 && enter < 1 && exit >= 0 && exit < enter)) return show('paperResult', 'error', 'Entry must be between 0 and 1, and exit closer to zero than entry.');
+  await chrome.storage.local.set({ paperThresholds: { enter, exit } });
+  show('paperResult', 'ok', `Saved. Long at +${enter}, flat under +${exit}; short at −${enter}, flat over −${exit}.`);
+});
+$('paperReset').onclick = async () => {
+  await chrome.storage.local.remove('paperThresholds');
+  showThresholds();
+  show('paperResult', 'ok', `Back to the defaults: ±${ENTER} to enter, ±${EXIT} to exit.`);
+};
+
 function showUsage(u = { jevCalls: 0, jevTokens: 0, audioSeconds: 0, since: Date.now() }) {
   $('uCost').textContent = formatUsd(costOf(u.jevTokens) + (u.audioSeconds / 60) * DEEPGRAM_USD_PER_MIN);
   $('uCalls').textContent = u.jevCalls.toLocaleString('en-US');
@@ -82,7 +101,7 @@ function showUsage(u = { jevCalls: 0, jevTokens: 0, audioSeconds: 0, since: Date
   $('since').textContent = new Date(u.since).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 }
 $('jevPrice').textContent = `$${+(USD_PER_INPUT_TOKEN * 1e6).toFixed(4)}`;
-$('dgPrice').textContent = `$${DEEPGRAM_USD_PER_MIN}`;
+$('dgPrice').textContent = `$${+DEEPGRAM_USD_PER_MIN.toFixed(4)}`;
 $('reset').onclick = async () => {
   const usageTotal = { jevCalls: 0, jevTokens: 0, audioSeconds: 0, since: Date.now() };
   await chrome.storage.local.set({ usageTotal });
@@ -92,8 +111,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.usageTotal) showUsage(changes.usageTotal.newValue);
 });
 
-const { apiKey, deepgramKey, usageTotal } = await chrome.storage.local.get(['apiKey', 'deepgramKey', 'usageTotal']);
+const { apiKey, deepgramKey, usageTotal, paperThresholds } = await chrome.storage.local.get(['apiKey', 'deepgramKey', 'usageTotal', 'paperThresholds']);
 showUsage(usageTotal);
+showThresholds(paperThresholds);
 if (apiKey) {
   $('apiKey').value = apiKey;
   show('jevResult', '', 'A key is saved.');

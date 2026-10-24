@@ -77,6 +77,12 @@ export class DeepgramStream {
     };
   }
 
+  // Replaces the keyterms on the open stream (and on any reconnect).
+  configure(keyterms) {
+    this.opts = { ...this.opts, keyterms };
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: 'Configure', keyterms }));
+  }
+
   close() {
     this.closed = true;
     clearTimeout(this.retry);

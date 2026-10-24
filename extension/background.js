@@ -1,6 +1,8 @@
 // Service worker: one click on the toolbar button (or Alt+Shift+H) opens the side panel and starts
 // listening to that tab. It owns the offscreen document that captures audio (a tab or the microphone)
 // and streams it to Deepgram; the panel attaches to whatever is being captured.
+import { keytermsFor } from './deepgram.js';
+
 const OFFSCREEN = 'offscreen.html';
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
@@ -55,13 +57,13 @@ async function toOffscreen(msg) {
 }
 
 async function startCapture({ source, tabId, streamId }) {
-  const { deepgramKey, micDevice } = await chrome.storage.local.get(['deepgramKey', 'micDevice']);
+  const { deepgramKey, micDevice, asset, context } = await chrome.storage.local.get(['deepgramKey', 'micDevice', 'asset', 'context']);
   if (!deepgramKey) {
     announce({ type: 'captureError', error: 'no-deepgram-key' });
     return { error: 'no-deepgram-key' };
   }
   await ensureOffscreen();
-  const res = await toOffscreen({ type: 'start', source, tabId, streamId, deepgramKey, deviceId: source === 'mic' ? micDevice : undefined });
+  const res = await toOffscreen({ type: 'start', source, tabId, streamId, deepgramKey, deviceId: source === 'mic' ? micDevice : undefined, keyterms: keytermsFor(asset, context) });
   if (res?.error) announce({ type: 'captureError', error: res.error });
   else announce({ type: 'captureStarted', source, tabId, startedAt: res.startedAt });
   return res;

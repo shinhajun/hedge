@@ -28,13 +28,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     stop();
     sendResponse({ ok: true });
   }
+  if (msg.type === 'configure') capture?.stream.configure(msg.keyterms);
   if (msg.type === 'state') {
     sendResponse(capture ? { active: true, source: capture.source, tabId: capture.tabId, startedAt: capture.startedAt, log: capture.log, diag: diag() } : { active: false });
   }
   return false;
 });
 
-async function start({ source, tabId, streamId, deepgramKey, deviceId }) {
+async function start({ source, tabId, streamId, deepgramKey, deviceId, keyterms }) {
   stop();
   // A tab is captured as is. The microphone is listening to media, not to a call: echo cancellation
   // would subtract whatever this computer is playing (on a Mac, any app's sound) and noise suppression
@@ -62,6 +63,7 @@ async function start({ source, tabId, streamId, deepgramKey, deviceId }) {
     send({ type: 'status', state, detail, startedAt });
   };
   c.stream = new DeepgramStream(deepgramKey, {
+    opts: { keyterms },
     onResult: (msg) => {
       c.log.push(msg);
       if (c.log.length > LOG_LIMIT) c.log.shift();
