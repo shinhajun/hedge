@@ -64,6 +64,7 @@ function notice(html) {
 // The usual start is one click on the toolbar button: the service worker starts capturing that tab and
 // the panel attaches to it. Listen here starts the microphone, or a tab the button was clicked on before.
 let pendingMic = false;
+let autoDiag = false; // the panel opened Diagnostics itself, because of a problem
 
 $('go').onclick = () => (session?.on ? stop() : listen());
 $('asset').addEventListener('keydown', (e) => {
@@ -212,6 +213,14 @@ chrome.runtime.onMessage.addListener((msg) => {
     session.judge?.update(words);
     dirty();
   } else if (msg.type === 'status') {
+    // Diagnostics stay folded for the demo, and open by themselves when something is wrong.
+    if (['error', 'silent', 'reconnecting'].includes(msg.state) && !$('diag').open) {
+      $('diag').open = true;
+      autoDiag = true;
+    } else if (msg.state === 'live' && autoDiag) {
+      $('diag').open = false;
+      autoDiag = false;
+    }
     if (msg.state === 'error' || msg.state === 'ended') {
       notice(esc(msg.detail || ''));
       finish(msg.state);
@@ -221,7 +230,6 @@ chrome.runtime.onMessage.addListener((msg) => {
         notice(isMac
           ? 'The microphone hears nothing. Turn on Chrome in System Settings → Privacy & Security → Microphone, or pick another Input above.'
           : 'The microphone hears nothing. Check that it isn’t muted, or pick another Input above.');
-        $('diag').open = true;
       } else if (session.state !== 'silent' && /Microphone|hears nothing/.test($('notice').textContent)) notice('');
     }
   } else if (msg.type === 'level') {
@@ -511,7 +519,7 @@ const money = (v, cur = 'USD') => {
   const digits = a >= 1000 ? 2 : a >= 1 ? 2 : 6;
   return (cur === 'USD' ? '$' : '') + a.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
-const signedMoney = (v) => `${v >= 0.005 ? '+' : v <= -0.005 ? '−' : ''}${money(v)}`;
+const signedMoney = (v) => `${v >= 0.005 ? '+' : v <= -0.005 ? '−' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 function drawPrice() {
   const svg = $('priceChart');

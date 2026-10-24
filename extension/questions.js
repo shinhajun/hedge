@@ -61,10 +61,13 @@ export const DRIVERS = [
   },
 ];
 
+// Judged on `recent`, the last RECENT_WORDS words: the one or two newest words alone can't show an ad
+// (on a CNBC pre-roll, 9/15 right that way and 11/15 this way; programme talk now scores 0.06–0.16).
 const AD = {
   type: 'noul',
-  instructions: 'Are the words inside ⟦ ⟧ an advertisement, a station break, or talk by someone else that has nothing to do with `asset`?',
+  instructions: 'Is `recent`, the latest stretch of speech, an advertisement, a sponsor message or a station promo, rather than the program itself?',
 };
+const RECENT_WORDS = 20;
 
 export const QUESTIONS = {
   signal: SIGNAL,
@@ -80,6 +83,7 @@ export function buildState({ words, newFrom, asset, context, earlier }) {
   if (context) state.event = context;
   if (earlier) state.earlier = earlier;
   state.transcript = fresh ? `${said} ⟦${fresh}⟧`.trim() : said;
+  state.recent = words.slice(-RECENT_WORDS).map((x) => x.w).join(' ');
   return state;
 }
 

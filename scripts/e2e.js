@@ -89,6 +89,33 @@ await sleep(1000); // the settings tab opens on install, sometimes in the first 
 for (const p of context0.pages()) if (p.url().includes(extId)) await p.close();
 await sw.evaluate(async (keys) => chrome.storage.local.set(keys), { apiKey: envKey('TYPESAFE_API_KEY'), deepgramKey: envKey('DEEPGRAM_API_KEY'), asset, context });
 
+// The page's main video, which may sit in an iframe (embedded players).
+async function videoFrame() {
+  for (const f of media?.frames() || []) if (await f.$('video').catch(() => null)) return f;
+  return null;
+}
+// what: 'state' | 'play' | 'pause' | 'seek' (ahead by `arg` seconds).
+async function onVideo(what, arg) {
+  const f = await videoFrame();
+  if (!f) return null;
+  return f.evaluate(([what, arg]) => {
+    const v = [...document.querySelectorAll('video')].sort((x, y) => y.clientWidth * y.clientHeight - x.clientWidth * x.clientHeight)[0];
+    if (!v) return null;
+    if (what === 'state') return { paused: v.paused, t: Math.round(v.currentTime), d: Number.isFinite(v.duration) ? Math.round(v.duration) : null, muted: v.muted };
+    if (what === 'play') {
+      v.muted = false;
+      v.volume = 1;
+      v.play().catch(() => {});
+    }
+    if (what === 'pause') v.pause();
+    if (what === 'seek') {
+      if (!Number.isFinite(v.duration)) return 'live: no seek';
+      v.currentTime = Math.min(v.duration - 5, v.currentTime + arg);
+    }
+    return 'ok';
+  }, [what, arg]).catch(() => null);
+}
+
 // The tab to listen to.
 let tabId = null;
 let media;
@@ -96,14 +123,14 @@ if (mode !== 'mic') {
   media = await context0.newPage();
   await media.goto(web ? opt.url : `http://localhost:${port}/`, { waitUntil: 'domcontentloaded' });
   if (web) {
-    await media.waitForSelector('video', { timeout: 30000 });
+    for (let i = 0; i < 60 && !(await videoFrame()); i++) {
+      // Some players only create the <video> after Play is pressed.
+      if (i === 10) for (const f of media.frames()) await f.click('button[aria-label*="Play" i], .vp-big-play-button, .play-icon, [data-play-button]', { timeout: 1000 }).catch(() => {});
+      await sleep(500);
+    }
+    if (!(await videoFrame())) throw new Error('no video on the page');
     await sleep(4000);
-    await media.evaluate(() => {
-      const v = document.querySelector('video');
-      v.muted = false;
-      v.volume = 1;
-      return v.play().catch(() => {});
-    });
+    await onVideo('play');
   }
   for (let i = 0; i < 60 && tabId == null; i++) {
     tabId = await sw.evaluate(async () => (await chrome.tabs.query({ audible: true }))[0]?.id ?? null);
@@ -143,12 +170,12 @@ if (mode === 'mic') {
 // A hidden video tab can stop playing; keep it in front (the panel keeps working in the background)
 // and bring the panel forward only for screenshots.
 if (web) await media.bringToFront();
-const mediaState = () => !web ? null : media.evaluate(() => {
-  const v = [...document.querySelectorAll('video')].sort((a, b) => b.clientWidth - a.clientWidth)[0];
-  if (!v) return { video: false };
-  const ad = !!document.querySelector('#movie_player.ad-showing');
-  return { paused: v.paused, ad, t: Math.round(v.currentTime), muted: v.muted };
-}).catch(() => null);
+const mediaState = async () => {
+  if (!web) return null;
+  const ad = await media.evaluate(() => !!document.querySelector('#movie_player.ad-showing, .ytp-ad-player-overlay, .jw-flag-ads, [class*="ad-showing"]')).catch(() => false);
+  const v = await onVideo('state');
+  return { ...(v || { video: false }), ad };
+};
 const cdp = await context0.newCDPSession(panel);
 await cdp.send('Performance.enable');
 const heap = async () => (await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'JSHeapUsedSize').value;
@@ -170,8 +197,22 @@ const samples = [];
 const started = Date.now();
 let prev = { ...browserUsage(), at: started };
 let shotMid = false;
+// The capture matrix (`page`): pause at 20 s for 6 s, then seek ahead a minute at 40 s.
+const actions = mode === 'page' ? [
+  { at: 20, name: 'pause', run: () => onVideo('pause') },
+  { at: 26, name: 'resume', run: () => onVideo('play') },
+  { at: 40, name: 'seek', run: () => onVideo('seek', 60) },
+] : [];
+const marks = {};
+const wordsNow = () => panel.evaluate(() => globalThis.panel.session()?.transcript?.all().length ?? 0);
 while (Date.now() - started < seconds * 1000) {
-  await sleep(15000);
+  await sleep(mode === 'page' ? 5000 : 15000);
+  for (const a of actions) {
+    if (a.done || Date.now() - started < a.at * 1000) continue;
+    a.done = true;
+    marks[a.name] = { words: await wordsNow(), result: await a.run() };
+    log(`${a.name}: ${JSON.stringify(marks[a.name])}`);
+  }
   const u = browserUsage();
   const t = await panel.evaluate(() => globalThis.panel.timeline());
   const s = {
@@ -222,6 +263,18 @@ await sleep(800);
 const lamp = await panel.$eval('#lamp', (el) => el.dataset.state);
 
 const hours = timeline.stats.audioSeconds / 3600 || 1;
+marks.end = { words: timeline.words.length };
+const adSeen = samples.some((x) => x.media?.ad);
+const matrix = mode === 'page' && {
+  words: timeline.words.length,
+  beforePause: marks.pause?.words,
+  survivesPause: marks.seek?.words > marks.resume?.words,
+  survivesSeek: marks.seek?.result === 'live: no seek' ? 'n/a (live)' : marks.end.words > marks.seek?.words,
+  adSeen,
+  wordsDuringAd: adSeen ? samples.filter((x) => x.media?.ad).map((x) => x.words) : null,
+  states: [...new Set(samples.map((x) => x.state))],
+  marks,
+};
 const ticks = timeline.price?.ticks || [];
 const paperEvents = timeline.paper?.events || [];
 const checks = {
@@ -233,6 +286,7 @@ const checks = {
 const report = {
   mode,
   checks,
+  matrix,
   price: timeline.price && { venue: timeline.price.venue, symbol: timeline.price.symbol, kind: timeline.price.kind, ticks: ticks.length, first: ticks[0]?.price, last: ticks.at(-1)?.price },
   paper: timeline.paper && { events: paperEvents, pnl: timeline.paper.pnl },
   source: web ? opt.url : clip.id,
