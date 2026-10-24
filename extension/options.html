@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{name} settings</title>
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    main { max-width: 600px; margin: 0 auto; padding: 56px 20px 72px; }
+    h1 { margin: 0; font: 900 64px/0.85 var(--display); letter-spacing: 0.05em; text-transform: uppercase; }
+    .lede { margin: 14px 0 44px; color: var(--muted); font-size: 18px; max-width: 34em; }
+    section + section { margin-top: 40px; padding-top: 28px; border-top: 1px solid var(--line); }
+    h2 { font-size: 15px; color: var(--ink); margin-bottom: 8px; }
+    .hint { margin: 0 0 14px; color: var(--muted); font-size: 15px; }
+    .hint a { color: var(--ink); text-decoration-color: var(--brass); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+    .row { display: flex; gap: 8px; }
+    .row input { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .result { font-size: 15px; margin: 12px 0 0; min-height: 1.4em; }
+    .result[data-state="ok"] { color: var(--bull); }
+    .result[data-state="error"] { color: var(--bear); }
+    .usage { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0; }
+    .usage div { padding: 0 14px; border-left: 1px solid var(--line); display: flex; flex-direction: column-reverse; justify-content: flex-end; }
+    .usage div:first-child { padding-left: 0; border-left: 0; }
+    .usage dt { font: 700 11px/1.2 var(--display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+    .usage dd { margin: 0; font: 800 28px/1 var(--display); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+    @media (max-width: 520px) { .usage { grid-template-columns: repeat(2, 1fr); row-gap: 16px; } .usage div:nth-child(3) { padding-left: 0; border-left: 0; } }
+    ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 15px; }
+    ol li { margin-bottom: 6px; }
+    ol b { color: var(--ink); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 data-brand>Hedge</h1>
+    <p class="lede">Two keys and you’re listening. Both stay in this browser and go only to the service they belong to.</p>
+
+    <section>
+      <h2>TypeSafe API key</h2>
+      <p class="hint">Jev judges every new word. Get a key at <a href="https://typesafe.ai" target="_blank" rel="noopener">typesafe.ai</a>.</p>
+      <form id="jevForm" autocomplete="off">
+        <div class="row">
+          <input class="field" id="apiKey" type="password" spellcheck="false" placeholder="Paste your TypeSafe key" aria-label="TypeSafe API key">
+          <button class="btn btn-quiet" type="button" data-reveal="apiKey">Show</button>
+        </div>
+        <div class="actions"><button class="btn" type="submit">Save and test</button><button class="btn btn-quiet" type="button" data-clear="apiKey">Remove</button></div>
+      </form>
+      <p class="result" id="jevResult" role="status"></p>
+    </section>
+
+    <section>
+      <h2>Deepgram API key</h2>
+      <p class="hint">Deepgram Nova-3 turns the audio into words as they’re spoken. Get a key at <a href="https://console.deepgram.com" target="_blank" rel="noopener">console.deepgram.com</a>.</p>
+      <form id="dgForm" autocomplete="off">
+        <div class="row">
+          <input class="field" id="deepgramKey" type="password" spellcheck="false" placeholder="Paste your Deepgram key" aria-label="Deepgram API key">
+          <button class="btn btn-quiet" type="button" data-reveal="deepgramKey">Show</button>
+        </div>
+        <div class="actions"><button class="btn" type="submit">Save and test</button><button class="btn btn-quiet" type="button" data-clear="deepgramKey">Remove</button></div>
+      </form>
+      <p class="result" id="dgResult" role="status"></p>
+    </section>
+
+    <section>
+      <h2>Usage</h2>
+      <p class="hint">Jev bills <span id="jevPrice"></span> per million input tokens; Deepgram bills <span id="dgPrice"></span> per minute of audio, and nothing while the tab is quiet. Since <span id="since"></span>.</p>
+      <dl class="usage">
+        <div><dt>Spent</dt><dd id="uCost">$0</dd></div>
+        <div><dt>Jev calls</dt><dd id="uCalls">0</dd></div>
+        <div><dt>Jev tokens</dt><dd id="uTokens">0</dd></div>
+        <div><dt>Audio</dt><dd id="uAudio">0 min</dd></div>
+      </dl>
+      <div class="actions"><button class="btn btn-quiet" type="button" id="reset">Reset totals</button></div>
+    </section>
+
+    <section>
+      <h2>How it reads</h2>
+      <ol>
+        <li>The audio of the tab you pick (or your microphone) streams to <b>Deepgram</b>, which sends words back about half a second after they’re spoken.</li>
+        <li>Each new word sends everything said so far to <b>Jev</b> with your asset. It answers with a signal from bearish to bullish and six drivers: guidance, demand, margins, surprise, hedging and legal or policy risk.</li>
+        <li>When Deepgram corrects a word, every reading after it is redone from the corrected text.</li>
+        <li>After about 2,000 words, Jev sees the latest 2,000 plus a short note on what came before, so long streams stay fast and cheap.</li>
+      </ol>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

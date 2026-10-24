@@ -1,0 +1,15 @@
+{
+  "name": "hedge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/*.test.js",
+    "bench:stt": "node scripts/stt-bench.js",
+    "bench:jev": "node scripts/jev-bench.js",
+    "harness": "node scripts/harness.js",
+    "e2e": "node scripts/e2e.js"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

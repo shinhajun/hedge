@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{name}</title>
+  <link rel="stylesheet" href="theme.css">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="plate top">
+    <h1 class="mark" data-brand>Hedge</h1>
+    <div class="lamp" id="lamp" data-state="off" role="status">
+      <i aria-hidden="true"></i><span id="lampText">Off</span>
+    </div>
+    <a class="gear" href="options.html" target="_blank" title="Settings and keys" aria-label="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.6 4.7.1-1.2-.1-1.2 2-1.6-2-3.4-2.4 1a8 8 0 0 0-2-1.2L15.8 3h-4l-.4 2.6a8 8 0 0 0-2 1.2L7 5.8l-2 3.4 2 1.6-.1 1.2.1 1.2-2 1.6 2 3.4 2.4-1a8 8 0 0 0 2 1.2l.4 2.6h4l.4-2.6a8 8 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6Z"/></svg>
+    </a>
+  </header>
+
+  <section class="setup" id="setup">
+    <div class="fields">
+      <label class="asset-field">
+        <span class="label">Asset</span>
+        <input class="field" id="asset" placeholder="NVDA" maxlength="16" autocomplete="off" spellcheck="false" required>
+      </label>
+      <label class="context-field">
+        <span class="label">What’s playing <em>optional</em></span>
+        <input class="field" id="context" placeholder="NVIDIA Q3 earnings call; CFO speaking" autocomplete="off">
+      </label>
+    </div>
+    <div class="controls">
+      <div class="source" role="radiogroup" aria-label="Listen to">
+        <button type="button" role="radio" aria-checked="true" data-source="tab">This tab</button>
+        <button type="button" role="radio" aria-checked="false" data-source="mic">Microphone</button>
+      </div>
+      <button class="btn go" id="go" type="button">Listen</button>
+    </div>
+    <p class="notice" id="notice" role="alert" hidden></p>
+    <p class="target" id="target" hidden></p>
+  </section>
+
+  <section class="dial" aria-label="Signal">
+    <svg id="gauge" viewBox="0 0 320 238" role="img" aria-labelledby="value word">
+      <g id="band"></g>
+      <g id="ticks"></g>
+      <text class="end bear" x="44" y="236" text-anchor="middle">Bear</text>
+      <text class="end bull" x="276" y="236" text-anchor="middle">Bull</text>
+      <g id="puffs"></g>
+      <g id="needle">
+        <g class="tremble">
+          <path class="needle" d="M160 172 L156.5 168 L160 48 L163.5 168 Z"/>
+          <path class="tail" d="M156 168 h8 v20 h-8 Z"/>
+        </g>
+      </g>
+      <circle class="hub" cx="160" cy="168" r="11"/>
+      <path class="slot" d="M154 168 h12"/>
+    </svg>
+    <div class="readout">
+      <output id="value">0.00</output>
+      <div class="sub">
+        <span id="word" aria-live="polite">Waiting</span>
+        <span id="conf"></span>
+      </div>
+    </div>
+    <p class="heard" id="heard" hidden></p>
+  </section>
+
+  <section class="recorder">
+    <header><h2>Signal per word</h2><span class="label" id="span"></span></header>
+    <svg id="chart" aria-label="Signal over time"></svg>
+    <ol class="swings" id="swings"></ol>
+  </section>
+
+  <section class="drivers">
+    <header><h2>Drivers</h2></header>
+    <ul id="drivers"></ul>
+  </section>
+
+  <section class="tape">
+    <header>
+      <h2>Transcript</h2>
+      <button class="tolive" id="toLive" type="button" hidden>Back to live ↓</button>
+    </header>
+    <div class="words" id="words" tabindex="0">
+      <div class="empty" id="empty">
+        <p><b>Play anything with a voice:</b> an earnings call, a Fed press conference, a YouTube or Twitch live stream, a Zoom webinar.</p>
+        <p>Set the asset, press <b>Listen</b>, and <span data-brand></span> re-reads everything said so far on every new word. Words that moved the needle light up here.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="meters" id="meters">
+    <dl>
+      <div><dt>Jev</dt><dd id="mCalls">0 calls</dd></div>
+      <div><dt>Tokens</dt><dd id="mTokens">0</dd></div>
+      <div><dt>Spent</dt><dd id="mCost">$0</dd></div>
+      <div><dt>Jev p50</dt><dd id="mP50">–</dd></div>
+      <div><dt>Word → gauge</dt><dd id="mLag">–</dd></div>
+      <div><dt>Audio</dt><dd id="mAudio">0:00</dd></div>
+    </dl>
+    <button class="btn-quiet export" id="export" type="button" disabled>Export</button>
+  </footer>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

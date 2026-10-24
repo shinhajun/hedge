@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{name} · microphone</title>
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    main { max-width: 480px; margin: 0 auto; padding: 72px 20px; }
+    h1 { font: 800 44px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; margin: 0 0 16px; }
+    p { color: var(--muted); font-size: 17px; margin: 0 0 28px; }
+    #result { margin-top: 20px; min-height: 1.5em; color: var(--ink); }
+    #result[data-state="error"] { color: var(--bear); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Microphone</h1>
+    <p>For speech outside the browser, like a TV or a desktop app, <span data-brand></span> can listen through your microphone. Chrome asks once; after that the side panel can turn it on and off.</p>
+    <button class="btn" id="allow" type="button">Allow microphone</button>
+    <p id="result" role="status"></p>
+  </main>
+  <script type="module" src="mic.js"></script>
+</body>
+</html>

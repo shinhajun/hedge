@@ -1,0 +1,10 @@
+{
+  "appName": {
+    "message": "Hedge",
+    "description": "Product name. The only place it is set: the manifest, pages and scripts all read it from here."
+  },
+  "appDescription": {
+    "message": "Hears what a speaker says on any tab and reads every new word as bullish or bearish for your stock or coin.",
+    "description": "Chrome Web Store / extensions page description."
+  }
+}
