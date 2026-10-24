@@ -7,7 +7,8 @@
 // Word times are rewritten to session time: seconds of audio captured since the session started.
 import { CLOSE_STREAM, KEEPALIVE, openDeepgram, SAMPLE_RATE } from './deepgram.js';
 
-const QUIET_RMS = 0.003;
+// Quiet means next to nothing: a paused video sends exact zeros. (Real rooms and soft speech sit well above.)
+const QUIET_RMS = 0.0005;
 const QUIET_AFTER_MS = 2500;
 const KEEPALIVE_MS = 4000;
 const REPLAY_SECONDS = 30;
@@ -27,6 +28,14 @@ export class DeepgramStream {
     this.everOpened = false;
     this.reconnects = 0;
     this.closed = false;
+    this.results = 0; // Results messages received
+    this.finalWords = 0;
+    this.socket = 'connecting'; // 'connecting' | 'open' | 'closed'
+    this.closeInfo = null; // { code, reason } of the last unexpected close
+  }
+
+  get bytesSent() {
+    return this.sentSamples * 2;
   }
 
   get state() {
@@ -36,12 +45,14 @@ export class DeepgramStream {
 
   connect() {
     this.onStatus?.(this.state);
+    this.socket = 'connecting';
     const ws = openDeepgram(this.apiKey, this.opts);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     this.socketSamples = 0;
     this.segments = []; // { socket, session, end } sample offsets: how socket time maps to session time
     ws.onopen = () => {
+      this.socket = 'open';
       if (this.everOpened) this.reconnects++;
       this.everOpened = true;
       this.attempt = 0;
@@ -50,15 +61,18 @@ export class DeepgramStream {
       this.keepalive = setInterval(() => this.paused && ws.readyState === 1 && ws.send(KEEPALIVE), KEEPALIVE_MS);
     };
     ws.onmessage = (e) => this.receive(JSON.parse(e.data));
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       clearInterval(this.keepalive);
       if (this.closed || ws !== this.ws) return;
+      this.socket = 'closed';
+      this.closeInfo = { code: e.code, reason: e.reason || '' };
       if (!this.everOpened && this.attempt >= 2) {
-        this.onStatus?.('error', 'Deepgram refused the connection. Check the Deepgram key in settings.');
+        // A refused handshake says nothing about why; the caller can ask (see checkDeepgramKey).
+        this.onStatus?.('error', 'refused');
         return;
       }
       const wait = Math.min(8000, 400 * 2 ** this.attempt++);
-      this.onStatus?.(this.state);
+      this.onStatus?.(this.state, `Deepgram closed the connection (${e.code}${e.reason ? `: ${e.reason}` : ''}); reconnecting.`);
       this.retry = setTimeout(() => this.connect(), wait);
     };
   }
@@ -111,11 +125,15 @@ export class DeepgramStream {
 
   receive(msg) {
     if (msg.type !== 'Results') return;
+    this.results++;
     const alt = msg.channel?.alternatives?.[0] || { words: [] };
     const words = alt.words
       .map((w) => ({ ...w, start: this.toSession(w.start), end: this.toSession(w.end) }))
       .filter((w) => w.start >= this.lastFinalEnd - 0.05);
-    if (msg.is_final) this.lastFinalEnd = Math.max(this.lastFinalEnd, this.toSession(msg.start + msg.duration));
+    if (msg.is_final) {
+      this.lastFinalEnd = Math.max(this.lastFinalEnd, this.toSession(msg.start + msg.duration));
+      this.finalWords += words.length;
+    }
     this.onResult?.({
       type: 'Results',
       is_final: msg.is_final,

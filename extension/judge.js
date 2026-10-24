@@ -16,6 +16,9 @@ const AD_AT = 0.7;
 const CACHE_LIMIT = 4000;
 const COMPACT_FROM = 8000; // points
 const SMOOTH = 0.5;
+const MOVE_TURN = 0.04; // a move ends when the gauge turns back this far
+const DRIVER_JUMP = 0.35; // a driver switching on by this much is a moment of its own
+const DRIVER_WEIGHT = 0.6; // …ranked as if the gauge had moved this share of the jump (see DRIVERS' `weight`)
 
 const SEED = 0x811c9dc5;
 function step(h, s) {
@@ -176,31 +179,80 @@ export class Judge {
     this.points = this.points.filter((p, i) => p.n >= keepFrom || peaks.has(p) || i % 8 === 0);
   }
 
-  // The biggest moves so far, largest first. A move is a run of readings going the same way; it is
-  // pinned and quoted at its steepest reading.
+  // The moments worth pinning, best first. Two kinds, merged:
+  // - moves of the gauge between turning points (zigzag: wiggles under MOVE_TURN don't end a move), so a
+  //   steady climb counts as one move however it wobbles;
+  // - a driver switching on (or flipping sign) by at least DRIVER_JUMP, which catches news landing while
+  //   the gauge is already pinned (NVIDIA's $11B outlook: guidance 0.17 → 0.87, gauge only +0.2).
+  // A driver switch inside a move labels that move. Each moment is pinned and quoted at its steepest reading.
   swings(k = 5, min = 0.05) {
-    const runs = [];
-    let run = null;
-    for (const p of this.points) {
-      const sign = Math.sign(p.delta);
-      if (p.ad || !sign) {
-        run = null;
-        continue;
-      }
-      if (run?.sign === sign) {
-        run.delta += p.delta;
-        run.n = p.n;
-        if (Math.abs(p.delta) > Math.abs(run.peak.delta)) run.peak = p;
-      } else {
-        run = { sign, from: p.from, n: p.n, delta: p.delta, peak: p };
-        runs.push(run);
+    const key = `${this.points.length}:${this.last?.n}`;
+    if (this.moments?.key !== key) this.moments = { key, list: this.findMoments() };
+    return this.moments.list.filter((m) => m.score >= min).slice(0, k);
+  }
+
+  findMoments() {
+    const pts = this.points.filter((p) => !p.ad);
+    const moves = [];
+    let pivot = pts[0], ext = pts[0], dir = 0;
+    const close = () => pivot !== ext && moves.push(this.moment(pivot, ext));
+    for (const p of pts) {
+      const up = p.signal - ext.signal;
+      if (dir === 0) {
+        if (Math.abs(p.signal - pivot.signal) >= MOVE_TURN) [dir, ext] = [Math.sign(p.signal - pivot.signal), p];
+      } else if (Math.sign(up) === dir) ext = p;
+      else if (Math.abs(up) >= MOVE_TURN) {
+        close();
+        [pivot, ext, dir] = [ext, p, -dir];
       }
     }
-    return runs
-      .filter((r) => Math.abs(r.delta) >= min)
-      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-      .slice(0, k)
-      .map((r) => ({ from: r.from, n: r.n, delta: r.delta, t: r.peak.t, signal: r.peak.signal, peak: r.peak, quote: this.quote(r.peak.from - 1, r.peak.n, 8) }));
+    if (dir) close();
+
+    for (const d of DRIVERS) {
+      let lastAt = -Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        const v = pts[i].drivers[d.id] ?? 0, was = pts[i - 1].drivers[d.id] ?? 0;
+        const on = Math.abs(v) >= ACTIVE_AT, wasOn = Math.abs(was) >= ACTIVE_AT;
+        if (!on || (wasOn && Math.sign(v) === Math.sign(was)) || pts[i].n - lastAt < 60) continue;
+        // How far the driver travelled: from its low before the switch to its high after (or the reverse).
+        const s = Math.sign(v);
+        const before = pts.slice(Math.max(0, i - 12), i).map((p) => p.drivers[d.id] ?? 0);
+        const after = pts.slice(i, i + 40).map((p) => p.drivers[d.id] ?? 0);
+        const jump = s > 0 ? Math.max(...after) - Math.min(...before) : Math.min(...after) - Math.max(...before);
+        if (Math.abs(jump) < DRIVER_JUMP) continue;
+        lastAt = pts[i].n;
+        const steep = pts.slice(Math.max(1, i - 12), i + 30).reduce((a, p, j, arr) => {
+          const prev = j ? arr[j - 1] : pts[Math.max(0, i - 13)];
+          const dv = ((p.drivers[d.id] ?? 0) - (prev.drivers[d.id] ?? 0)) * s;
+          return dv > a.dv ? { p, dv } : a;
+        }, { p: pts[i], dv: -Infinity }).p;
+        const flip = { id: d.id, label: d.label, word: d.words[s > 0 ? 1 : 0], jump, n: steep.n };
+        const score = (d.weight ?? DRIVER_WEIGHT) * Math.abs(jump);
+        // Bullish news labels a rising move (and bearish a falling one); otherwise it stands alone, measured
+        // by how far the gauge followed it.
+        const home = moves.find((m) => steep.n > m.from && steep.n <= m.n && Math.sign(m.delta) === s);
+        if (home) {
+          if (!home.driver || Math.abs(jump) > Math.abs(home.driver.jump)) home.driver = flip;
+          home.score = Math.max(home.score, score);
+        } else {
+          const follow = pts.slice(i, i + 40).reduce((a, p) => (p.signal * s > a.signal * s ? p : a), pts[i]);
+          moves.push({ ...this.moment(pts[i - 1], follow, steep), driver: flip, score });
+        }
+      }
+    }
+    return moves.sort((a, b) => b.score - a.score);
+  }
+
+  // A moment from point `a` to point `b`, pinned at its steepest reading (or at `at`).
+  moment(a, b, at) {
+    const dir = Math.sign(b.signal - a.signal) || 1;
+    let peak = at;
+    if (!peak) {
+      peak = b;
+      for (const p of this.points) if (p.n > a.n && p.n <= b.n && !p.ad && p.delta * dir > peak.delta * dir) peak = p;
+    }
+    const delta = b.signal - a.signal;
+    return { from: a.n, n: b.n, delta, score: Math.abs(delta), t: peak.t, signal: peak.signal, peak, driver: null, quote: this.quote(peak.from - 1, peak.n, 8) };
   }
 
   // The words of a span with a little lead-in, for markers and `earlier`.

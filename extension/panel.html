@@ -36,8 +36,20 @@
       </div>
       <button class="btn go" id="go" type="button">Listen</button>
     </div>
+    <label class="mic-row" id="micRow" hidden><span class="label">Input</span><select class="field" id="micDevice"></select></label>
     <p class="notice" id="notice" role="alert" hidden></p>
     <p class="target" id="target" hidden></p>
+    <details class="diag" id="diag">
+      <summary>Diagnostics</summary>
+      <dl>
+        <div><dt>Input level</dt><dd><span class="meter"><i id="dLevel"></i></span><span id="dLevelText">–</span></dd></div>
+        <div><dt>Device</dt><dd id="dDevice">–</dd></div>
+        <div><dt>Sample rate</dt><dd id="dRate">–</dd></div>
+        <div><dt>Deepgram</dt><dd id="dSocket">–</dd></div>
+        <div><dt>Sent</dt><dd id="dSent">–</dd></div>
+        <div><dt>Last error</dt><dd id="dError">–</dd></div>
+      </dl>
+    </details>
   </section>
 
   <section class="dial" aria-label="Signal">
@@ -69,6 +81,20 @@
   <section class="recorder">
     <header><h2>Signal per word</h2><span class="label" id="span"></span></header>
     <svg id="chart" aria-label="Signal over time"></svg>
+    <div class="price" id="priceBox">
+      <header>
+        <h2 id="priceLabel">Price</h2>
+        <span class="now" id="priceNow"></span>
+        <label class="switch"><input type="checkbox" id="paperOn"><span>Paper trade</span></label>
+      </header>
+      <svg id="priceChart" aria-label="Price over time"></svg>
+      <p class="note" id="priceNote"></p>
+    </div>
+    <div class="paper" id="paper" hidden>
+      <header><span class="badge">Paper</span><span id="paperPos"></span><b id="paperPnl"></b></header>
+      <ol class="trades" id="trades"></ol>
+      <p class="fine">Simulated, no orders. Long at +0.35 and flat again under +0.15; short at −0.35 and flat over −0.15. $10,000 a position, filled at the live price, no fees.</p>
+    </div>
     <ol class="swings" id="swings"></ol>
   </section>
 
@@ -84,8 +110,8 @@
     </header>
     <div class="words" id="words" tabindex="0">
       <div class="empty" id="empty">
-        <p><b>Play anything with a voice:</b> an earnings call, a Fed press conference, a YouTube or Twitch live stream, a Zoom webinar.</p>
-        <p>Set the asset, press <b>Listen</b>, and <span data-brand></span> re-reads everything said so far on every new word. Words that moved the needle light up here.</p>
+        <ol class="checklist" id="checklist"></ol>
+        <p>Works on anything with a voice: earnings calls, Fed pressers, YouTube, Twitch and X streams, Zoom webinars.</p>
       </div>
     </div>
   </section>

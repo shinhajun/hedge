@@ -28,3 +28,29 @@ export const openDeepgram = (apiKey, opts) => new WebSocket(deepgramUrl(opts), [
 
 export const KEEPALIVE = JSON.stringify({ type: 'KeepAlive' });
 export const CLOSE_STREAM = JSON.stringify({ type: 'CloseStream' });
+
+// Why a live connection failed, when the WebSocket can't say: a 0.1 s prerecorded request with the
+// same key returns the HTTP status. 401 bad key, 402 out of credit, 403 no access to the model.
+export async function checkDeepgramKey(apiKey) {
+  const pcm = new Uint8Array(3200); // 0.1 s of 16 kHz silence
+  try {
+    const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&channels=1', {
+      method: 'POST',
+      headers: { Authorization: `Token ${apiKey}`, 'Content-Type': 'application/octet-stream' },
+      body: pcm,
+      signal: AbortSignal.timeout(8000),
+    });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+export function deepgramProblem(status) {
+  return {
+    401: 'Deepgram rejected the key (401). Check it in Settings.',
+    402: 'The Deepgram account is out of credit (402).',
+    403: 'This Deepgram key can’t use the Nova-3 model (403).',
+    0: 'Couldn’t reach Deepgram. Check the network.',
+  }[status] || `Deepgram refused the connection (${status}).`;
+}

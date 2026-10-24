@@ -15,9 +15,10 @@ const SIGNAL = {
 
 // `sided: 'bear'` drivers can only push the signal down (level 0 is neutral).
 // `words`: what an active driver says, [when bearish, when bullish].
+// `weight`: how a switch of this driver ranks among the swings; guidance and surprise move prices most.
 export const DRIVERS = [
   {
-    id: 'guidance', label: 'Guidance',
+    id: 'guidance', label: 'Guidance', weight: 0.8,
     instructions: 'How does the speaker change the forward outlook for `asset`?',
     criteria: ['Outlook lowered, cut or withdrawn, or a policy path that is worse for `asset`', 'Outlook not discussed, or reaffirmed unchanged', 'Outlook raised, or a policy path that is better for `asset`'],
     words: ['cut', 'raised'],
@@ -35,15 +36,21 @@ export const DRIVERS = [
     words: ['squeezed', 'expanding'],
   },
   {
-    id: 'surprise', label: 'Surprise',
+    id: 'surprise', label: 'Surprise', weight: 0.8,
     instructions: 'How does what the speaker said compare with what the market expected for `asset`?',
     criteria: ['Worse than expected', 'In line with expectations, or no comparison possible', 'Better than expected'],
     words: ['miss', 'beat'],
   },
   {
     id: 'hedging', label: 'Hedging', sided: 'bear',
-    instructions: 'How does the speaker talk about the outlook for `asset`?',
-    criteria: ['Directly and confidently', 'With some caveats and qualifiers', 'Evasively or heavily hedged: dodging questions, walking things back, piling on qualifiers'],
+    // Tuned on scripts/hedging-eval.js: level 0 has to cover talk that isn't about the outlook at all,
+    // or procedure, disclaimers and ads read as evasive.
+    instructions: 'Is the speaker dodging or refusing to commit on the outlook for `asset`?',
+    criteria: [
+      'No dodging: a direct answer or a clear view, or talk that is not about the outlook at all (greetings, procedure, ads, standard legal or forward-looking disclaimers, "depends on the data")',
+      'Mostly direct, but hedges the key point (wide ranges, softened numbers, "we will see")',
+      'Dodges: declines to answer, changes the subject, refuses numbers it would normally give, or says it is too early to tell',
+    ],
     words: ['evasive', ''],
   },
   {

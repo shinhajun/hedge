@@ -35,5 +35,13 @@
     }
   },
   "permissions": ["sidePanel", "tabCapture", "offscreen", "storage", "activeTab"],
-  "host_permissions": ["https://api.typesafe.ai/*"]
+  "host_permissions": [
+    "https://api.typesafe.ai/*",
+    "https://api.deepgram.com/*",
+    "https://api.binance.com/*",
+    "https://api.exchange.coinbase.com/*",
+    "https://query1.finance.yahoo.com/*",
+    "https://query2.finance.yahoo.com/*",
+    "https://api.nasdaq.com/*"
+  ]
 }

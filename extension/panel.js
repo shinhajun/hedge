@@ -3,6 +3,8 @@ import { applyBrand, PRODUCT_NAME } from './brand.js';
 import { DEEPGRAM_USD_PER_MIN } from './deepgram.js';
 import { callJev, costOf, formatUsd } from './jev.js';
 import { ACTIVE_AT, Judge } from './judge.js';
+import { PaperBook } from './paper.js';
+import { findSource } from './price.js';
 import { buildState, DRIVERS, QUESTIONS, readAnswers, signalWord } from './questions.js';
 import { Transcript } from './transcript.js';
 
@@ -14,9 +16,13 @@ const MAX_IN_FLIGHT = 3;
 const DOM_WORDS = 700; // older words leave the page (they stay in the transcript and the export)
 const CHART_SECONDS = 15 * 60; // the chart shows the last 15 minutes
 const SWINGS = 5;
+const FRESH_MS = { crypto: 15_000, stock: 120_000 }; // a tick older than this isn't a live price
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search); // tests open the panel as a tab: ?tab=<id>
+const isMac = /Mac/.test(navigator.userAgentData?.platform || navigator.platform);
+const keycap = () => `<span class="keycap"><img src="icons/32.png" alt="">${PRODUCT_NAME}</span>`;
+const shortcut = isMac ? '⌥⇧H' : 'Alt+Shift+H';
 applyBrand();
 
 let source = 'tab';
@@ -24,7 +30,7 @@ let session = null;
 let usageTotal = null;
 
 // ---------- settings ----------
-const saved = await chrome.storage.local.get(['asset', 'context', 'source', 'usageTotal']);
+const saved = await chrome.storage.local.get(['asset', 'context', 'source', 'usageTotal', 'paper']);
 $('asset').value = saved.asset || '';
 $('context').value = saved.context || '';
 setSource(saved.source || 'tab');
@@ -32,11 +38,21 @@ usageTotal = saved.usageTotal || { jevCalls: 0, jevTokens: 0, audioSeconds: 0, s
 $('asset').addEventListener('input', () => chrome.storage.local.set({ asset: $('asset').value.trim().toUpperCase() }));
 $('context').addEventListener('input', () => chrome.storage.local.set({ context: $('context').value.trim() }));
 for (const b of document.querySelectorAll('.source button')) b.onclick = () => !session?.on && setSource(b.dataset.source);
+$('paperOn').checked = !!saved.paper;
+$('paperOn').onchange = () => {
+  chrome.storage.local.set({ paper: $('paperOn').checked });
+  // Turning it on starts a fresh book from now; turning it off drops it.
+  if (session?.judge) session.book = $('paperOn').checked ? new PaperBook() : null;
+  dirty();
+};
 
 function setSource(s) {
   source = s;
   for (const b of document.querySelectorAll('.source button')) b.setAttribute('aria-checked', String(b.dataset.source === s));
   chrome.storage.local.set({ source: s });
+  $('micRow').hidden = s !== 'mic';
+  if (s === 'mic') listDevices();
+  hint();
 }
 
 function notice(html) {
@@ -45,80 +61,99 @@ function notice(html) {
 }
 
 // ---------- start / stop ----------
+// The usual start is one click on the toolbar button: the service worker starts capturing that tab and
+// the panel attaches to it. Listen here starts the microphone, or a tab the button was clicked on before.
+let pendingMic = false;
+
 $('go').onclick = () => (session?.on ? stop() : listen());
-$('asset').addEventListener('keydown', (e) => e.key === 'Enter' && !session?.on && listen());
+$('asset').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  if (session?.on) armJudge();
+  else listen();
+});
 
 async function listen() {
-  const asset = $('asset').value.trim().toUpperCase();
-  if (!asset) {
-    $('asset').focus();
-    return notice('Name the stock or coin to judge first, like <b>NVDA</b> or <b>BTC</b>.');
-  }
   const { apiKey, deepgramKey } = await chrome.storage.local.get(['apiKey', 'deepgramKey']);
-  if (!apiKey || !deepgramKey) {
-    return notice(`${PRODUCT_NAME} needs a ${!apiKey ? 'TypeSafe' : 'Deepgram'} key. <a href="options.html" target="_blank">Add it in settings</a>.`);
-  }
+  if (!apiKey || !deepgramKey) return drawChecklist(true);
+  let tabId;
   if (source === 'mic') {
     const perm = await navigator.permissions.query({ name: 'microphone' }).catch(() => null);
     if (perm?.state !== 'granted') {
-      session = { pendingMic: true };
+      pendingMic = true;
       chrome.tabs.create({ url: 'mic.html' });
-      return notice('Allow the microphone in the tab that just opened; listening starts right after.');
+      return notice('Allow the microphone in the tab that just opened.');
     }
+  } else {
+    tabId = params.has('tab') ? Number(params.get('tab')) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
   }
-  const tabId = params.has('tab') ? Number(params.get('tab')) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
   notice('');
-  start({ asset, context: $('context').value.trim(), apiKey, tabId });
+  setLamp('connecting');
   const res = await chrome.runtime.sendMessage({ type: 'listen', source, tabId }).catch((err) => ({ error: err.message }));
-  if (res?.error) {
-    finish('error');
-    notice({
-      'not-invoked': `Chrome needs one click first: press the ${PRODUCT_NAME} button in the toolbar while this tab is open (or Alt+Shift+H), then Listen.`,
-      'chrome-page': 'Chrome’s own pages can’t be captured. Open the video or stream in a normal tab.',
-      'no-deepgram-key': 'Add a Deepgram key in <a href="options.html" target="_blank">settings</a>.',
-      'mic-blocked': 'Chrome blocked the microphone. Allow it for this extension and try again.',
-    }[res.error] || `Couldn’t start listening: ${res.error}`);
-    return;
-  }
-  if (source === 'tab' && tabId != null) {
-    const tab = await chrome.tabs.get(tabId).catch(() => null);
-    if (tab?.title) {
-      $('target').hidden = false;
-      $('target').textContent = `Listening to “${tab.title}”`;
-    }
-  }
+  if (res?.error === 'already') return syncCapture();
+  if (res?.error) return showError(res.error);
+  attach({ source, tabId, startedAt: res.startedAt });
 }
 
-function start({ asset, context, apiKey, tabId }) {
+// Show a capture that has started (here, from the toolbar button, or before this panel opened).
+// `log` replays the results it already has.
+function attach({ source: src, tabId, startedAt, log = [] }) {
+  if (session?.on && session.startedAt === startedAt) return;
   const transcript = new Transcript(POLICY);
-  const judge = new Judge({
-    maxInFlight: MAX_IN_FLIGHT,
-    windowWords: WINDOW_WORDS,
-    ask: async ({ words, newFrom, earlier }) => {
-      const res = await callJev(apiKey, { state: buildState({ words, newFrom, asset, context, earlier }), questions: QUESTIONS });
-      return { ...readAnswers(res.answers), tokens: res.usage?.input_tokens || 0 };
-    },
-    onChange: ({ point, revisedFrom }) => {
-      if (point) onPoint(point);
-      if (revisedFrom !== undefined) session.revisions++;
-      dirty();
-    },
-    onError: (err) => {
-      if (err.status === 401) notice('Jev rejected the TypeSafe key. <a href="options.html" target="_blank">Check it in settings</a>.');
-    },
-  });
-  session = { on: true, asset, context, source, tabId, transcript, judge, lags: [], revisions: 0, startedAt: null, state: 'connecting', audio: 0, reconnects: 0, breaks: [], lastPuff: 0, billed: { calls: 0, tokens: 0, audio: 0 } };
+  for (const m of log) transcript.apply(m);
+  session = { on: true, asset: '', context: '', source: src, tabId, transcript, judge: null, lags: [], revisions: 0, startedAt, state: 'connecting', audio: 0, reconnects: 0, breaks: [], lastPuff: 0, billed: { calls: 0, tokens: 0, audio: 0 }, prices: [], feed: null, book: null, diag: {} };
+  setSource(src);
   document.body.classList.add('on');
   document.body.classList.remove('done');
   $('go').textContent = 'Stop';
   $('go').dataset.on = '';
-  $('asset').readOnly = $('context').readOnly = true;
   $('export').disabled = false;
   $('empty').hidden = true;
   wordEls.forEach((el) => el.remove());
   wordEls.clear();
   $('words').querySelectorAll('.more, .break').forEach((el) => el.remove());
+  notice('');
   setLamp('connecting');
+  armJudge();
+  hint();
+  dirty();
+}
+
+// Judging starts once there is an asset; until then the transcript runs on its own.
+async function armJudge() {
+  const s = session;
+  if (!s?.on || s.judge) return;
+  const asset = $('asset').value.trim().toUpperCase();
+  if (!asset) {
+    $('asset').focus();
+    return notice('Type the stock or coin above and press Enter. Hedge is already listening.'.replace('Hedge', PRODUCT_NAME));
+  }
+  const { apiKey } = await chrome.storage.local.get('apiKey');
+  if (s !== session || s.judge) return;
+  if (!apiKey) return drawChecklist(true);
+  s.asset = asset;
+  s.context = $('context').value.trim();
+  s.judge = new Judge({
+    maxInFlight: MAX_IN_FLIGHT,
+    windowWords: WINDOW_WORDS,
+    ask: async ({ words, newFrom, earlier }) => {
+      const res = await callJev(apiKey, { state: buildState({ words, newFrom, asset, context: s.context, earlier }), questions: QUESTIONS });
+      return { ...readAnswers(res.answers), tokens: res.usage?.input_tokens || 0 };
+    },
+    onChange: ({ point, revisedFrom }) => {
+      if (s !== session) return;
+      if (point) onPoint(point);
+      if (revisedFrom !== undefined) s.revisions++;
+      dirty();
+    },
+    onError: (err) => {
+      if (err.status === 401) notice('Jev rejected the TypeSafe key. <a href="options.html" target="_blank">Check it in Settings</a>.');
+    },
+  });
+  s.book = $('paperOn').checked ? new PaperBook() : null;
+  $('asset').readOnly = $('context').readOnly = true;
+  notice('');
+  startPrice(s);
+  s.judge.update(s.transcript.judgeable());
   dirty();
 }
 
@@ -130,34 +165,67 @@ async function stop() {
 function finish(state) {
   if (!session) return;
   session.on = false;
+  session.closeFeed?.();
   document.body.classList.remove('on');
   document.body.classList.add('done');
   $('go').textContent = 'Listen';
   delete $('go').dataset.on;
   $('asset').readOnly = $('context').readOnly = false;
   setLamp(state);
+  hint();
   dirty();
 }
 
-// ---------- messages from the offscreen document ----------
+const ERRORS = {
+  'not-invoked': () => `Click ${keycap()} on this tab to listen <span class="kbd">${shortcut}</span>`,
+  'chrome-page': () => 'Chrome’s own pages can’t be captured. Open the video in a normal tab.',
+  'mic-blocked': () => 'Chrome blocked the microphone. Allow it from the mic icon in the address bar, then Listen again.',
+  'mic-missing': () => 'That microphone isn’t connected. Pick another Input above.',
+};
+function showError(code) {
+  if (code === 'no-deepgram-key') return drawChecklist(true);
+  setLamp(session?.on ? session.state : 'off');
+  notice((ERRORS[code] || (() => `Couldn’t start listening: ${code}`))());
+}
+
+// Ask the offscreen document what it is capturing, and attach to it.
+async function syncCapture() {
+  const st = await chrome.runtime.sendMessage({ type: 'captureState' }).catch(() => null);
+  if (st?.active) {
+    attach(st);
+    if (st.diag) Object.assign(session.diag, st.diag);
+  }
+}
+
+// ---------- messages ----------
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'micGranted' && session?.pendingMic) {
-    session = null;
+  if (msg.type === 'micGranted' && pendingMic) {
+    pendingMic = false;
     listen();
     return;
   }
-  if (!session?.on) return;
+  if (msg.type === 'captureStarted') return syncCapture();
+  if (msg.type === 'captureError') return showError(msg.error);
+  if (!session?.on || (msg.startedAt && msg.startedAt !== session.startedAt)) return;
   if (msg.type === 'stt') {
-    session.judge.update(session.transcript.apply(msg.msg));
+    const words = session.transcript.apply(msg.msg);
+    session.judge?.update(words);
     dirty();
   } else if (msg.type === 'status') {
-    session.startedAt ??= msg.startedAt;
     if (msg.state === 'error' || msg.state === 'ended') {
-      notice(msg.detail);
+      notice(esc(msg.detail || ''));
       finish(msg.state);
-    } else setLamp(msg.state);
+    } else {
+      setLamp(msg.state);
+      if (msg.state === 'silent') {
+        notice(isMac
+          ? 'The microphone hears nothing. Turn on Chrome in System Settings → Privacy & Security → Microphone, or pick another Input above.'
+          : 'The microphone hears nothing. Check that it isn’t muted, or pick another Input above.');
+        $('diag').open = true;
+      } else if (session.state !== 'silent' && /Microphone|hears nothing/.test($('notice').textContent)) notice('');
+    }
   } else if (msg.type === 'level') {
-    session.startedAt ??= msg.startedAt;
+    Object.assign(session.diag, msg);
     session.audio = msg.sentSeconds; // billed: quiet stretches aren't sent
     session.clock = msg.sessionSeconds;
     session.reconnects = msg.reconnects;
@@ -175,8 +243,78 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   session.breaks.push(session.transcript.all().length);
   dirty();
 });
+chrome.tabs.onActivated.addListener(() => hint());
 
-const LAMP = { off: 'Off', connecting: 'Connecting', live: 'Live', paused: 'Quiet', reconnecting: 'Reconnecting', error: 'Stopped', ended: 'Ended' };
+// One line under the controls: what is being heard, or the one thing to do to hear this tab.
+async function hint() {
+  const active = params.has('tab') ? Number(params.get('tab')) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+  const el = $('target');
+  if (session?.on && session.source === 'mic') {
+    el.innerHTML = `Listening through ${esc(session.diag.device || 'the microphone')}`;
+  } else if (session?.on && session.tabId === active) {
+    el.innerHTML = 'Listening to this tab';
+  } else if (source === 'tab') {
+    el.innerHTML = `Click ${keycap()} on this tab to listen <span class="kbd">${shortcut}</span>`;
+  } else el.innerHTML = '';
+  el.hidden = !el.innerHTML;
+}
+
+// First run: the two keys, then the one thing to do.
+async function drawChecklist(flash = false) {
+  const { apiKey, deepgramKey } = await chrome.storage.local.get(['apiKey', 'deepgramKey']);
+  const row = (ok, label) => `<li class="${ok ? 'ok' : 'no'}"><i aria-hidden="true">${ok ? '✓' : '✗'}</i>${label}${ok ? '' : ' <a href="options.html" target="_blank">Add in Settings</a>'}</li>`;
+  $('checklist').innerHTML = row(!!apiKey, 'TypeSafe key') + row(!!deepgramKey, 'Deepgram key') +
+    `<li class="go"><i aria-hidden="true">→</i>Click ${keycap()} on the tab you want to hear</li>`;
+  $('checklist').classList.toggle('flash', flash && !(apiKey && deepgramKey));
+  if (flash && !(apiKey && deepgramKey)) setLamp('off');
+}
+chrome.storage.onChanged.addListener((ch, area) => area === 'local' && (ch.apiKey || ch.deepgramKey) && drawChecklist());
+
+// ---------- microphone input ----------
+async function listDevices() {
+  const devices = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default');
+  const { micDevice } = await chrome.storage.local.get('micDevice');
+  $('micDevice').innerHTML = `<option value="">Default input</option>` +
+    devices.map((d, i) => `<option value="${esc(d.deviceId)}"${d.deviceId === micDevice ? ' selected' : ''}>${esc(d.label || `Microphone ${i + 1}`)}</option>`).join('');
+}
+$('micDevice').onchange = async () => {
+  await chrome.storage.local.set({ micDevice: $('micDevice').value });
+  if (session?.on && session.source === 'mic') listen();
+};
+navigator.mediaDevices.addEventListener?.('devicechange', listDevices);
+
+// ---------- live price ----------
+async function startPrice(s) {
+  $('priceLabel').textContent = s.asset;
+  $('priceNote').textContent = 'Looking for a live price…';
+  const src = await findSource(s.asset);
+  if (s !== session || !s.on) return;
+  s.feed = src;
+  if (!src) {
+    $('priceNote').textContent = `No keyless live price for ${s.asset}. Crypto streams from Binance or Coinbase; stocks need Yahoo or Nasdaq, which didn’t answer.`;
+    return dirty();
+  }
+  $('priceNote').textContent = '';
+  const onTick = (tick) => {
+    tick.seenAt = Date.now(); // plotted at the moment it arrived, on the same clock as the words
+    s.lastTick = tick;
+    const last = s.prices[s.prices.length - 1];
+    // Keep at most two ticks a second (the latest in each half second); hours of ticks stay small.
+    if (last && tick.seenAt - last.slot < 500) s.prices[s.prices.length - 1] = { ...tick, slot: last.slot };
+    else s.prices.push({ ...tick, slot: tick.seenAt });
+    dirty('price');
+  };
+  if (src.first) onTick(src.first);
+  s.closeFeed = src.open(onTick);
+}
+
+// The live price, or null when the last tick is stale or the market is closed.
+function livePrice(s = session) {
+  const t = s?.lastTick;
+  return t?.live && s.feed && Date.now() - t.seenAt <= FRESH_MS[s.feed.kind] ? t.price : null;
+}
+
+const LAMP = { off: 'Off', connecting: 'Connecting', live: 'Live', paused: 'Quiet', silent: 'No sound', reconnecting: 'Reconnecting', error: 'Stopped', ended: 'Ended' };
 function setLamp(state) {
   if (session) session.state = state;
   $('lamp').dataset.state = state;
@@ -184,6 +322,9 @@ function setLamp(state) {
 }
 
 function onPoint(p) {
+  if (session.book && !p.ad) {
+    for (const e of session.book.update(p.signal, livePrice(), p.t)) (session.paperEvents ||= []).push(e);
+  }
   // Word spoken → gauge moved: for each word, the first reading that includes it. Words that a
   // revision brings back don't count again.
   if (session.startedAt) {
@@ -212,6 +353,7 @@ function dirty(part = 'all') {
   frame ||= requestAnimationFrame(() => {
     frame = 0;
     const all = pending.has('all');
+    const parts = pending;
     pending = new Set();
     if (all) {
       drawGauge();
@@ -219,6 +361,7 @@ function dirty(part = 'all') {
       drawDrivers();
       drawWords();
     }
+    if (all || parts.has('price')) drawPrice();
     drawMeters();
   });
 }
@@ -285,6 +428,7 @@ function drawGauge() {
 }
 
 let chartW = 0;
+let axis = null; // the signal chart's time axis; the price strip shares it
 new ResizeObserver(([e]) => {
   chartW = e.contentRect.width;
   dirty();
@@ -299,6 +443,7 @@ function drawChart() {
   const t1 = Math.max(60, now), t0 = Math.max(0, t1 - CHART_SECONDS);
   const x = (t) => padL + ((t - t0) / (t1 - t0)) * (W - padL - padR);
   const y = (v) => padT + ((1 - v) / 2) * (H - padT - padB);
+  axis = { t0, t1, x, W, padL, padR };
   const out = [];
   for (const v of [-1, -0.5, 0.5, 1]) out.push(`<line class="grid" x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/>`);
   const step = [15, 30, 60, 120, 300, 600].find((s) => (t1 - t0) / s <= 6) || 900;
@@ -346,8 +491,8 @@ function drawChart() {
   svg.innerHTML = out.join('');
   $('span').textContent = session ? (t0 > 0 ? 'last 15 min' : clock(now)) : '';
 
-  $('swings').innerHTML = swings.map((m, i) => `<li class="${dir(m.delta)}"><button type="button" data-n="${m.n}" data-from="${m.from}" title="Show these words in the transcript">
-    <span class="n">${i + 1}</span><span class="d">${fmtSigned(m.delta)}</span><span class="q">“${esc(m.quote)}”</span><span class="t">${clock(m.t)}</span></button></li>`).join('');
+  $('swings').innerHTML = swings.map((m, i) => `<li class="${m.driver ? (m.driver.jump > 0 ? 'bull' : 'bear') : dir(m.delta)}"><button type="button" data-n="${m.n}" data-from="${m.from}" title="Show these words in the transcript">
+    <span class="n">${i + 1}</span><span class="d">${fmtSigned(m.delta)}</span><span class="q">${m.driver ? `<i class="drv">${esc(m.driver.label)} ${esc(m.driver.word)}</i>` : ''}“${esc(m.quote)}”</span><span class="t">${clock(m.t)}</span></button></li>`).join('');
 }
 
 $('swings').addEventListener('click', (e) => {
@@ -360,6 +505,84 @@ $('swings').addEventListener('click', (e) => {
   els.forEach((el) => el.classList.add('flash'));
   setTimeout(() => els.forEach((el) => el.classList.remove('flash')), 1600);
 });
+
+const money = (v, cur = 'USD') => {
+  const a = Math.abs(v);
+  const digits = a >= 1000 ? 2 : a >= 1 ? 2 : 6;
+  return (cur === 'USD' ? '$' : '') + a.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+const signedMoney = (v) => `${v >= 0.005 ? '+' : v <= -0.005 ? '−' : ''}${money(v)}`;
+
+function drawPrice() {
+  const svg = $('priceChart');
+  const s = session;
+  const ticks = s?.prices || [];
+  const W = Math.max(200, Math.round(svg.clientWidth || chartW)), H = 74, padT = 8, padB = 8;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const last = s?.lastTick;
+  const live = livePrice(s);
+  if (last) {
+    const first = ticks[0]?.price ?? last.price;
+    const ch = (last.price / first - 1) * 100;
+    const closed = s.feed?.kind === 'stock' && !last.live;
+    $('priceNow').innerHTML = `${money(last.price, last.currency)}<em data-dir="${dir(ch, 0.005)}">${closed ? 'market closed' : `${ch >= 0 ? '+' : '−'}${Math.abs(ch).toFixed(2)}%`}</em>`;
+    $('priceLabel').textContent = `${s.asset} · ${s.feed?.venue ?? ''}`;
+  } else $('priceNow').textContent = '';
+  const out = [];
+  if (axis && s?.startedAt && ticks.length) {
+    const { x, t0, t1 } = axis;
+    const ts = (tick) => (tick.seenAt - s.startedAt) / 1000;
+    const vis = ticks.filter((k) => ts(k) >= t0 - 5);
+    const prices = vis.map((k) => k.price);
+    let lo = Math.min(...prices), hi = Math.max(...prices);
+    if (hi - lo < lo * 0.0005) [lo, hi] = [lo * 0.99975, hi * 1.00025]; // a flat market still gets a band
+    const y = (p) => padT + ((hi - p) / (hi - lo)) * (H - padT - padB);
+    out.push(`<line class="grid" x1="${axis.padL}" x2="${W - axis.padR}" y1="${y(hi)}" y2="${y(hi)}"/><line class="grid" x1="${axis.padL}" x2="${W - axis.padR}" y1="${y(lo)}" y2="${y(lo)}"/>`);
+    out.push(`<text class="axis" x="2" y="${y(hi) + 3}">${compact(hi)}</text><text class="axis" x="2" y="${y(lo) + 3}">${compact(lo)}</text>`);
+    // The swings, carried down from the signal chart: did the price follow?
+    for (const m of s.judge?.swings(SWINGS) || []) if (m.t >= t0) out.push(`<line class="guide" x1="${x(m.t)}" x2="${x(m.t)}" y1="${padT}" y2="${H - padB}"/>`);
+    // Paper position spans.
+    for (const tr of [...(s.book?.trades || []), ...(s.book?.position ? [{ ...s.book.position, inT: s.book.position.t, outT: Math.min(t1, s.clock ?? t1) }] : [])]) {
+      if (tr.outT < t0) continue;
+      out.push(`<rect class="held" x="${x(Math.max(t0, tr.inT))}" y="${padT}" width="${Math.max(1, x(tr.outT) - x(Math.max(t0, tr.inT)))}" height="${H - padT - padB}"/>`);
+    }
+    let d = '';
+    for (const k of vis) d += `${d ? 'L' : 'M'}${x(Math.max(t0, ts(k))).toFixed(1)} ${y(k.price).toFixed(1)} `;
+    if (s.on && vis.length) d += `L${x(Math.min(t1, Math.max(t0, s.clock ?? ts(vis.at(-1))))).toFixed(1)} ${y(vis.at(-1).price).toFixed(1)}`;
+    out.push(`<path class="line" d="${d}"/>`);
+    // Paper fills: ▲ long, ▼ short, ○ exit.
+    for (const e of s.paperEvents || []) {
+      if (e.t < t0) continue;
+      const cx = x(e.t), cy = y(Math.min(hi, Math.max(lo, e.price)));
+      if (e.type === 'open') {
+        const up = e.side === 'long';
+        out.push(`<path class="fill ${e.side}" d="M${cx} ${cy + (up ? -6 : 6)} l5 ${up ? 9 : -9} h-10 Z"/>`);
+      } else out.push(`<circle class="exit" cx="${cx}" cy="${cy}" r="3.5"/>`);
+    }
+  }
+  svg.innerHTML = out.join('');
+  if (s?.feed && !live && s.on && s.lastTick) {
+    $('priceNote').textContent = s.feed.kind === 'stock' ? `${s.asset}’s market is closed, so this is the last trade; paper trading waits for a live price.` : 'Waiting for the price feed…';
+  } else if (s?.feed && s.lastTick) $('priceNote').textContent = '';
+  drawPaper(live);
+}
+
+const compact = (p) => (p >= 1000 ? p.toLocaleString('en-US', { maximumFractionDigits: 0 }) : p >= 1 ? p.toFixed(2) : p.toPrecision(3));
+
+function drawPaper(live) {
+  const book = session?.book;
+  $('paper').hidden = !book;
+  if (!book) return;
+  const mark = live ?? session.lastTick?.price ?? null;
+  const pnl = book.pnl(mark);
+  const pos = book.position;
+  $('paperPos').textContent = pos ? `${pos.side} since ${clock(pos.t)} @ ${compact(pos.entry)}` : live == null ? 'waiting for a live price' : 'flat';
+  $('paperPnl').textContent = signedMoney(pnl.total);
+  $('paperPnl').dataset.dir = dir(pnl.total, 0.005);
+  const rows = book.trades.slice(-4).map((t) => ({ ...t, open: false }));
+  if (pos) rows.push({ side: pos.side, inT: pos.t, entry: pos.entry, pnl: pnl.open, open: true });
+  $('trades').innerHTML = rows.map((t) => `<li><span class="side ${t.side}">${t.side}</span><span>${clock(t.inT)} @ ${compact(t.entry)} → ${t.open ? 'open' : `${clock(t.outT)} @ ${compact(t.exit)}`}</span><span class="pl">${signedMoney(t.pnl)}</span></li>`).join('');
+}
 
 (function buildDrivers() {
   $('drivers').innerHTML = DRIVERS.map((d) => `<li data-id="${d.id}"><span class="name">${d.label}</span><span class="say"></span><span class="bar"><i></i></span></li>`).join('');
@@ -397,20 +620,21 @@ function drawWords() {
   const words = session.transcript.all();
   const judge = session.judge;
   const start = Math.max(0, words.length - DOM_WORDS);
-  const lastN = judge.last?.n ?? 0;
+  const lastN = judge?.last?.n ?? 0;
+  const points = judge?.points || [];
 
   // How much each visible word moved the signal: a call's move is shared by the words it added.
   const tint = new Map();
   const ad = new Set();
-  for (let k = judge.points.length - 1; k >= 0; k--) {
-    const p = judge.points[k];
+  for (let k = points.length - 1; k >= 0; k--) {
+    const p = points[k];
     if (p.n <= start) break;
     for (let i = Math.max(p.from, start); i < p.n; i++) {
       if (p.ad) ad.add(i);
       else tint.set(i, p.rawDelta / (p.n - p.from));
     }
   }
-  const pins = new Map(judge.swings(SWINGS).map((m, i) => [m.peak.n - 1, { i: i + 1, d: dir(m.delta) }]));
+  const pins = new Map((judge ? judge.swings(SWINGS) : []).map((m, i) => [m.peak.n - 1, { i: i + 1, d: dir(m.delta) }]));
 
   for (const [i, el] of wordEls) {
     if (i >= start && i < words.length) continue;
@@ -459,7 +683,20 @@ function drawWords() {
   if (follow) box.scrollTop = box.scrollHeight;
 }
 
+function drawDiag() {
+  const d = session?.diag || {};
+  const db = d.level > 0 ? Math.max(-60, 20 * Math.log10(d.level)) : -60;
+  $('dLevel').style.transform = `scaleX(${((db + 60) / 60).toFixed(3)})`;
+  $('dLevelText').textContent = d.level != null && session?.on ? `${Math.round(db)} dB` : '–';
+  $('dDevice').textContent = d.source === 'tab' ? 'This tab' : d.device || '–';
+  $('dRate').textContent = d.sampleRate ? `${d.sampleRate.toLocaleString('en-US')} Hz → 16,000 Hz` : '–';
+  $('dSocket').textContent = d.socket ? `${d.socket}${d.closeInfo ? ` (last close ${d.closeInfo.code}${d.closeInfo.reason ? `: ${d.closeInfo.reason}` : ''})` : ''}` : '–';
+  $('dSent').textContent = d.bytesSent != null ? `${(d.bytesSent / 1e6).toFixed(2)} MB · ${d.results} results · ${d.words} words` : '–';
+  $('dError').textContent = d.lastError || '–';
+}
+
 function drawMeters() {
+  drawDiag();
   const j = session?.judge;
   const s = j?.stats;
   $('mCalls').textContent = `${(s?.calls ?? 0).toLocaleString('en-US')} calls`;
@@ -509,7 +746,19 @@ function timeline() {
     windowWords: WINDOW_WORDS,
     words: transcript.all().map(({ w, start, end, final }) => ({ w, start, end, final })),
     points: judge.points.map(({ n, from, t, raw, signal, delta, confidence, drivers, ad, ms }) => ({ n, from, t, raw, signal, delta, confidence, drivers, ad, ms })),
-    swings: judge.swings(SWINGS).map(({ from, n, t, delta, signal, quote }) => ({ from, n, t, delta, signal, quote })),
+    swings: judge.swings(SWINGS).map(({ from, n, t, delta, signal, quote, driver, score }) => ({ from, n, t, delta, signal, quote, driver, score })),
+    price: session.feed && {
+      venue: session.feed.venue,
+      symbol: session.feed.symbol,
+      kind: session.feed.kind,
+      ticks: session.prices.map((k) => ({ t: session.startedAt ? (k.seenAt - session.startedAt) / 1000 : null, price: k.price, live: k.live })),
+    },
+    paper: session.book && {
+      trades: session.book.trades,
+      position: session.book.position,
+      events: session.paperEvents || [],
+      pnl: session.book.pnl(session.lastTick?.price ?? null),
+    },
     stats: {
       jevCalls: judge.stats.calls,
       jevTokens: judge.stats.tokens,
@@ -538,6 +787,16 @@ $('export').onclick = () => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+// ---------- on open ----------
+drawChecklist();
+hint();
+{
+  const { announce } = await chrome.storage.session.get('announce');
+  if (announce?.type === 'captureError' && Date.now() - announce.at < 15_000) showError(announce.error);
+  await chrome.storage.session.remove('announce');
+}
+syncCapture();
 
 // For tests and the export.
 globalThis.panel = { timeline, session: () => session };

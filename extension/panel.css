@@ -91,6 +91,32 @@ section, .top, .meters { padding-inline: 16px; }
 body.on .fields input { background: transparent; border-color: transparent; padding-inline: 0; }
 body.on .fields input:focus { box-shadow: none; }
 
+/* key-cap: the toolbar button, drawn as the thing to press */
+.keycap { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px 2px 4px; margin: 0 2px; border-radius: 4px; background: var(--face); box-shadow: inset 0 0 0 1px var(--plate-edge), 0 2px 0 var(--plate-edge); font: 800 12px/1.3 var(--display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); vertical-align: 1px; white-space: nowrap; }
+.keycap img { width: 16px; height: 16px; }
+.kbd { font: 700 11px/1 var(--display); letter-spacing: 0.06em; color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.target { white-space: normal; }
+.mic-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.mic-row select { flex: 1; font-size: 14px; padding: 6px 8px; }
+.checklist { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 15.5px; color: var(--ink); }
+.checklist li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.checklist i { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; font: 800 12px/1 var(--display); font-style: normal; color: var(--face); background: var(--steel); flex: none; }
+.checklist .ok i { background: var(--bull); }
+.checklist .no i { background: var(--bear); }
+.checklist .go i { background: var(--brass-deep); }
+.checklist a { font: 700 12px/1 var(--display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--bear); }
+.checklist.flash { animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
+.diag { margin-top: 10px; font-size: 13px; }
+.diag summary { cursor: pointer; font: 700 11px/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); list-style: none; }
+.diag summary::before { content: '▸ '; }
+.diag[open] summary::before { content: '▾ '; }
+.diag dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 0; padding: 8px 10px; background: var(--face); border: 1px solid var(--line); border-radius: 3px; }
+.diag dl div { display: contents; }
+.diag dt { font: 700 11px/1.6 var(--display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.diag dd { margin: 0; font: 600 13px/1.6 var(--display); letter-spacing: 0.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.diag .meter { display: inline-block; width: 120px; height: 8px; margin-right: 8px; vertical-align: 0; background: var(--plate); border-radius: 1px; overflow: hidden; }
+.diag .meter i { display: block; height: 100%; background: var(--bull); transform-origin: left center; transform: scaleX(0); transition: transform 0.15s linear; }
+
 /* ---------- the gauge ---------- */
 .dial { position: relative; padding-top: 6px; }
 #gauge { display: block; width: 100%; max-width: 420px; margin: 0 auto; overflow: visible; }
@@ -193,6 +219,47 @@ body:not(.on):not(.done) #needle { opacity: 0.55; }
 .swings .bear .d { color: var(--bear); }
 .swings .bull .n { background: var(--bull); }
 .swings .bull .d { color: var(--bull); }
+
+/* ---------- price strip + paper ---------- */
+.price { margin-top: 6px; }
+.price header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.price .now { font: 700 15px/1 var(--display); letter-spacing: 0.03em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.price .now em { font-style: normal; margin-left: 6px; }
+.price .now em[data-dir='bull'] { color: var(--bull); }
+.price .now em[data-dir='bear'] { color: var(--bear); }
+.switch { margin-left: auto; display: flex; align-items: center; gap: 6px; font: 700 12px/1 var(--display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.switch input { appearance: none; width: 28px; height: 16px; margin: 0; border-radius: 8px; background: var(--plate); box-shadow: inset 0 0 0 1px var(--plate-edge); position: relative; cursor: pointer; transition: background 0.2s; }
+.switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--steel); transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s; }
+.switch input:checked { background: var(--brass); }
+.switch input:checked::after { transform: translateX(12px); background: var(--face); }
+.switch input:checked + span { color: var(--ink); }
+#priceChart { display: block; width: 100%; height: 74px; background: var(--face); border: 1px solid var(--line); border-radius: 3px; }
+#priceChart .grid { stroke: var(--grid); stroke-width: 1; }
+#priceChart .line { fill: none; stroke: var(--brass-deep); stroke-width: 1.6; stroke-linejoin: round; }
+#priceChart .axis { font: 700 10px var(--display); letter-spacing: 0.04em; fill: var(--muted); font-variant-numeric: tabular-nums; }
+#priceChart .guide { stroke: var(--steel); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.7; }
+#priceChart .fill.long { fill: var(--bull); }
+#priceChart .fill.short { fill: var(--bear); }
+#priceChart .exit { fill: var(--face); stroke: var(--ink); stroke-width: 1.5; }
+#priceChart .held { fill: var(--brass); opacity: 0.12; }
+.price .note { margin: 4px 0 0; font-size: 13px; color: var(--muted); min-height: 0; }
+.price .note:empty { display: none; }
+.paper { margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--brass-deep); border-radius: 3px; background: color-mix(in oklch, var(--brass) 7%, transparent); }
+.paper header { display: flex; align-items: baseline; gap: 10px; }
+.paper .badge { font: 800 11px/1 var(--display); letter-spacing: 0.16em; text-transform: uppercase; color: var(--face); background: var(--brass-deep); padding: 3px 6px 2px; border-radius: 2px; }
+#paperPos { font: 700 13px/1 var(--display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+#paperPnl { margin-left: auto; font: 800 18px/1 var(--display); font-variant-numeric: tabular-nums; }
+#paperPnl[data-dir='bull'] { color: var(--bull); }
+#paperPnl[data-dir='bear'] { color: var(--bear); }
+.trades { list-style: none; margin: 6px 0 0; padding: 0; font: 600 13px/1.5 var(--display); letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.trades li { display: grid; grid-template-columns: 3.4em 1fr auto; gap: 8px; }
+.trades .side.long { color: var(--bull); }
+.trades .side.short { color: var(--bear); }
+.trades .pl { text-align: right; }
+.paper .fine { margin: 6px 0 0; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.swings .drv { display: inline-block; margin-right: 6px; padding: 1px 5px; border-radius: 2px; font: 800 10.5px/1.3 var(--display); letter-spacing: 0.08em; text-transform: uppercase; font-style: normal; color: var(--face); background: var(--steel); vertical-align: 1px; }
+.swings .bull .drv { background: var(--bull); }
+.swings .bear .drv { background: var(--bear); }
 
 /* ---------- drivers ---------- */
 #drivers { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }

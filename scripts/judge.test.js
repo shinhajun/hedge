@@ -132,3 +132,25 @@ test('transcript: interim words are replaced, final words stay', () => {
   settled.apply(res([['a', 0], ['b', 0.4]], false));
   assert.deepEqual(settled.judgeable().map((w) => w.key), ['a']);
 });
+
+test('swings: news that lands while the gauge is pinned still surfaces through its driver', () => {
+  const judge = new Judge({ ask: async () => ({}) });
+  judge.words = words(Array.from({ length: 200 }, (_, i) => `w${i}`).join(' '));
+  const pts = [];
+  let prev = null;
+  for (let n = 1; n <= 200; n++) {
+    // The gauge climbs once early (a real move), then sits near 0.75 while guidance jumps at word 150.
+    const signal = n < 20 ? 0.3 + (n / 20) * 0.45 : 0.75 + (n % 3 === 0 ? 0.01 : 0);
+    const guidance = n < 140 ? 0.1 : n < 150 ? 0.15 : Math.min(0.85, 0.15 + (n - 150) * 0.1);
+    const p = { n, from: n - 1, t: n * 0.4, raw: signal, signal, delta: prev ? signal - prev.signal : 0, drivers: { guidance }, ad: false };
+    pts.push(p);
+    prev = p;
+  }
+  judge.points = pts;
+  const top = judge.swings(5);
+  const g = top.find((m) => m.driver?.id === 'guidance');
+  assert.ok(g, 'the guidance switch is among the top swings');
+  assert.equal(g.driver.word, 'raised');
+  assert.ok(g.peak.n >= 150 && g.peak.n <= 160, `pinned where guidance jumped (word ${g.peak.n})`);
+  assert.ok(Math.abs(top[0].delta - 0.45) < 0.02 || top[0].driver, 'the early climb counts as one move');
+});

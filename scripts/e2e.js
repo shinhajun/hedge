@@ -5,6 +5,8 @@
 //   node scripts/e2e.js tab  [--clip duUBLlLBcdg] [--seconds 180]   a local page playing a test clip
 //   node scripts/e2e.js mic  [--clip K4ciiDyUvUo] [--seconds 60]    Chromium's fake microphone playing a clip
 //   node scripts/e2e.js live --url <YouTube live URL> [--asset SPY] [--seconds 600]
+//   node scripts/e2e.js page --url <any page with a video> [--asset SPY] [--seconds 60]   (one row of the capture matrix)
+// Options: --auto (start through the toolbar-click hand-off), --paper, --expect-trade, --tag <name>.
 //
 // Headless Chromium can't click the toolbar button, so tab capture is allowed with
 // --allowlisted-extension-id (the same permission a click grants). Keys come from .env and are never printed.
@@ -20,17 +22,23 @@ import { CLIPS, envKey, root } from './audio.js';
 
 const { positionals, values: opt } = parseArgs({
   allowPositionals: true,
-  options: { clip: { type: 'string' }, seconds: { type: 'string' }, url: { type: 'string' }, asset: { type: 'string' }, context: { type: 'string' } },
+  options: {
+    clip: { type: 'string' }, seconds: { type: 'string' }, url: { type: 'string' }, asset: { type: 'string' }, context: { type: 'string' }, tag: { type: 'string' },
+    auto: { type: 'boolean' }, // start the way the toolbar click does (the hand-off to the panel), not with Listen
+    paper: { type: 'boolean' }, // turn paper trading on
+    'expect-trade': { type: 'boolean' }, // fail unless at least one paper trade opens
+  },
 });
 const mode = positionals[0] || 'tab';
 const extDir = path.join(root, 'extension');
 const outDir = path.join(root, '.e2e');
 const extId = [...crypto.createHash('sha256').update(extDir).digest('hex').slice(0, 32)].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
 const clip = CLIPS.find((c) => c.id === (opt.clip || (mode === 'mic' ? 'K4ciiDyUvUo' : 'duUBLlLBcdg')));
-const seconds = Number(opt.seconds || { tab: 180, mic: 60, live: 600 }[mode]);
-const asset = opt.asset || (mode === 'live' ? 'SPY' : clip.asset);
-const context = opt.context ?? (mode === 'live' ? 'Live business TV coverage' : clip.context);
-const tag = mode === 'live' ? 'live' : `${mode}-${clip.id}`;
+const web = mode === 'live' || mode === 'page'; // a real site rather than the local test page
+const seconds = Number(opt.seconds || { tab: 180, mic: 60, live: 600, page: 60 }[mode]);
+const asset = opt.asset || (web ? 'SPY' : clip.asset);
+const context = opt.context ?? (web ? '' : clip.context);
+const tag = opt.tag || (web ? mode : `${mode}-${clip.id}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -86,8 +94,8 @@ let tabId = null;
 let media;
 if (mode !== 'mic') {
   media = await context0.newPage();
-  await media.goto(mode === 'live' ? opt.url : `http://localhost:${port}/`, { waitUntil: 'domcontentloaded' });
-  if (mode === 'live') {
+  await media.goto(web ? opt.url : `http://localhost:${port}/`, { waitUntil: 'domcontentloaded' });
+  if (web) {
     await media.waitForSelector('video', { timeout: 30000 });
     await sleep(4000);
     await media.evaluate(() => {
@@ -111,6 +119,7 @@ await panel.setViewportSize({ width: 420, height: 1180 });
 await panel.goto(`chrome-extension://${extId}/panel.html${tabId != null ? `?tab=${tabId}` : ''}`);
 await panel.waitForFunction(() => globalThis.panel);
 await panel.screenshot({ path: path.join(outDir, `panel-idle-light.png`) });
+if (opt.paper) await panel.check('#paperOn');
 if (mode === 'mic') {
   await panel.click('[data-source="mic"]');
   const micPage = context0.waitForEvent('page', { timeout: 5000 }).catch(() => null);
@@ -122,19 +131,23 @@ if (mode === 'mic') {
     await mic.click('#allow');
     log('microphone allowed on mic.html');
   } else log('microphone already granted; listening started directly');
+} else if (opt.auto) {
+  // What a click on the toolbar button does (headless Chromium has no toolbar to click).
+  await sw.evaluate((tabId) => chrome.tabs.get(tabId).then((tab) => globalThis.actionClick(tab)), tabId);
+  await panel.waitForFunction(() => globalThis.panel.session()?.on, null, { timeout: 10000 });
+  log('started the way the toolbar button does');
 } else {
   await panel.click('#go');
 }
 
-// A hidden YouTube tab can stop playing; keep it in front (the panel keeps working in the background)
+// A hidden video tab can stop playing; keep it in front (the panel keeps working in the background)
 // and bring the panel forward only for screenshots.
-if (mode === 'live') await media.bringToFront();
-const mediaState = () => mode !== 'live' ? null : media.evaluate(() => {
-  const v = document.querySelector('video');
+if (web) await media.bringToFront();
+const mediaState = () => !web ? null : media.evaluate(() => {
+  const v = [...document.querySelectorAll('video')].sort((a, b) => b.clientWidth - a.clientWidth)[0];
+  if (!v) return { video: false };
   const ad = !!document.querySelector('#movie_player.ad-showing');
-  const wasPaused = v.paused;
-  if (v.paused) v.play().catch(() => {});
-  return { paused: wasPaused, ad, t: Math.round(v.currentTime) };
+  return { paused: v.paused, ad, t: Math.round(v.currentTime), muted: v.muted };
 }).catch(() => null);
 const cdp = await context0.newCDPSession(panel);
 await cdp.send('Performance.enable');
@@ -180,7 +193,7 @@ while (Date.now() - started < seconds * 1000) {
     await panel.bringToFront();
     await sleep(500);
     await panel.screenshot({ path: path.join(outDir, `panel-${tag}-mid-light.png`) });
-    if (mode === 'live') await media.bringToFront();
+    if (web) await media.bringToFront();
   }
 }
 
@@ -209,9 +222,20 @@ await sleep(800);
 const lamp = await panel.$eval('#lamp', (el) => el.dataset.state);
 
 const hours = timeline.stats.audioSeconds / 3600 || 1;
+const ticks = timeline.price?.ticks || [];
+const paperEvents = timeline.paper?.events || [];
+const checks = {
+  words: timeline.words.length > 0,
+  extensionErrors: errors.length === 0,
+  price: ticks.length >= (timeline.price?.kind === 'crypto' ? 20 : 1),
+  ...(opt['expect-trade'] ? { paperTrade: paperEvents.some((e) => e.type === 'open') } : {}),
+};
 const report = {
   mode,
-  source: mode === 'live' ? opt.url : clip.id,
+  checks,
+  price: timeline.price && { venue: timeline.price.venue, symbol: timeline.price.symbol, kind: timeline.price.kind, ticks: ticks.length, first: ticks[0]?.price, last: ticks.at(-1)?.price },
+  paper: timeline.paper && { events: paperEvents, pnl: timeline.paper.pnl },
+  source: web ? opt.url : clip.id,
   asset,
   seconds,
   words: timeline.words.length,
@@ -233,4 +257,6 @@ log(JSON.stringify({ ...report, resources: { first: report.resources.first, last
 await context0.close();
 server.close();
 fs.rmSync(userDataDir, { recursive: true, force: true });
-if (errors.length) process.exitCode = 1;
+const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
+log(failed.length ? `FAIL: ${failed.join(', ')}` : `PASS: ${Object.keys(checks).join(', ')}`);
+if (failed.length) process.exitCode = 1;
